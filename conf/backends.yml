@@ -1,0 +1,52 @@
+---
+backends:
+
+  - name: app1
+    apis:
+      - /app1/fun1
+      - /app1/fun2
+    dns:
+      update: 60s
+    server:
+      max_conns: 10
+      max_fails: 2
+      fail_timeout: 30s
+    upsync:
+      interval: 60s
+      timeout: 10s
+    check:
+      rise: 1
+      fall: 2
+      timeout: 10000
+      interval: 10
+      request:
+        method: GET
+        uri: /health
+      response:
+        codes: 200 204
+        match: .*
+
+  - name: app2
+    apis:
+      - /app2/fun1
+      - /app2/fun2
+    dns:
+      update: 60s
+    server:
+      max_conns: 10
+      max_fails: 2
+      fail_timeout: 30s
+    upsync:
+      interval: 60s
+      timeout: 10s
+    check:
+      rise: 1
+      fall: 2
+      timeout: 10000
+      interval: 10
+      request:
+        method: GET
+        uri: /health
+      response:
+        codes: 200 204
+        match: .*

@@ -1,0 +1,39 @@
+ngx_addon_name="ngx_http_api_gateway_module ngx_stream_api_gateway_module"
+
+SRCS="$ngx_addon_dir/src/ngx_api_gateway.c         \
+      $ngx_addon_dir/src/ngx_http_api_gateway.c    \
+      $ngx_addon_dir/src/ngx_stream_api_gateway.c"
+
+REQUIRED_INCS="$YAML_PREFIX/include"
+REQUIRED_LIBS="-L$YAML_PREFIX/lib -lyaml"
+
+if [ "$ngx_module_link" = DYNAMIC ]; then
+
+    ngx_module_type=HTTP_AUX_FILTER
+    ngx_module_name="ngx_http_api_gateway_module"
+    ngx_module_incs=$REQUIRED_INCS
+    ngx_module_libs=$REQUIRED_LIBS
+    ngx_module_deps="$DEPS"
+    ngx_module_srcs="$SRCS"
+
+    . auto/module
+
+    ngx_module_type=STREAM
+    ngx_module_name="ngx_stream_api_gateway_module"
+    ngx_module_incs=$REQUIRED_INCS
+    ngx_module_libs=$REQUIRED_LIBS
+    ngx_module_deps="$DEPS"
+    ngx_module_srcs="$SRCS"
+
+    . auto/module
+
+elif [ "$ngx_module_link" = ADDON ]; then
+    STREAM_MODULES="$STREAM_MODULES ngx_stream_api_gateway_module"
+    HTTP_AUX_FILTER_MODULES="$HTTP_AUX_FILTER_MODULES ngx_http_api_gateway_module"
+
+    NGX_ADDON_SRCS="$NGX_ADDON_SRCS $SRCS"
+    NGX_ADDON_DEPS="$NGX_ADDON_DEPS $DEPS"
+
+    CORE_INCS="$CORE_INCS $REQUIRED_INCS"
+    CORE_LIBS="$CORE_LIBS $REQUIRED_LIBS"
+fi

@@ -1,0 +1,20 @@
+upstream {{name}} {
+    zone shm_{{name}} 256k;
+
+    upsync unix:logs/registry.sock/registry/backends/nodes?backend={{name}};
+    upsync_header Accept text/plain;
+
+    upsync_interval {{upsync.interval}};
+    upsync_timeout {{upsync.timeout}};
+
+    upsync_defaults max_conns={{server.max_conns}} max_fails={{server.max_fails}} fail_timeout={{server.fail_timeout}};
+    upsync_file {{name}}.peers;
+
+    dns_update {{dns.update}};
+    dns_add_down on;
+
+    check passive type=http rise={{check.rise}} fall={{check.fall}} timeout={{check.timeout}} interval={{check.interval}};
+    check_request_uri {{check.request.method}} {{check.request.uri}};
+    check_response_codes {{check.response.codes}};
+    check_response_body {{check.response.match}};
+}
