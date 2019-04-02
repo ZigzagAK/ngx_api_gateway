@@ -9,6 +9,8 @@ entrypoints:
       connect_timeout: 10s
       read_timeout: 60s
       protocol: http
+    expose:
+      - app1
 
   - name: app2
     listen: 8081
@@ -18,3 +20,6 @@ entrypoints:
       connect_timeout: 10s
       read_timeout: 60s
       protocol: http
+    expose:
+      - app1
+      - app2

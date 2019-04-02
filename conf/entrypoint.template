@@ -6,17 +6,14 @@ server {
     location / {
         auth_request {{auth.request}};
 
-        set_by_lua_block $upstream {
-            local location = require "router.location"
-            return location.get("{{name}}", ngx.var.request_uri)
-        }
+#       api_gateway_expose_api $backend {{expose}};
 
         proxy_connect_timeout {{proxy.connect_timeout}};
         proxy_read_timeout {{proxy.read_timeout}};
 
-        if ($upstream) {
-            proxy_pass {{proxy.protocol}}://$upstream;
-        }
+#        if ($backend) {
+#            proxy_pass {{proxy.protocol}}://$backend;
+#        }
 
         return 404 'No route';
     }

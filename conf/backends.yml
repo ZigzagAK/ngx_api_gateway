@@ -2,9 +2,10 @@
 backends:
 
   - name: app1
-    apis:
+    expose:
       - /app1/fun1
       - /app1/fun2
+      - /app1/fun3
     dns:
       update: 60s
     server:
@@ -27,7 +28,7 @@ backends:
         match: .*
 
   - name: app2
-    apis:
+    expose:
       - /app2/fun1
       - /app2/fun2
     dns:

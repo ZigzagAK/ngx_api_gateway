@@ -1,0 +1,15 @@
+---
+entrypoints:
+
+  - name: app3
+    listen: 11111
+    auth:
+      request: /auth_stub
+    proxy:
+      connect_timeout: 100s
+      read_timeout: 600s
+      protocol: http
+    expose:
+      - app1
+      - app2
+      - app3
