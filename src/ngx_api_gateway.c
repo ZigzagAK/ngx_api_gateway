@@ -182,7 +182,7 @@ nomem:
 
 
 static ngx_int_t
-ngx_api_gateway_handle_key(ngx_str_t path,
+ngx_api_gateway_handle_key(ngx_str_t path, yaml_char_t *key, size_t key_len,
     ngx_pool_t *pool, yaml_parser_t *parser, ngx_template_conf_t *conf,
     ngx_str_t *retval)
 {
@@ -190,7 +190,9 @@ ngx_api_gateway_handle_key(ngx_str_t path,
 
     for (j = 0; j < KEYS_seqn; j++)
         if (ngx_memn2cmp(KEYS_seq[j].data, path.data,
-                         KEYS_seq[j].len, path.len) == 0)
+                         KEYS_seq[j].len, path.len) == 0
+            || ngx_memn2cmp(KEYS_seq[j].data, key,
+                         KEYS_seq[j].len, key_len) == 0)
             return ngx_api_gateway_parse_seq(pool, parser,
                     (ngx_api_gateway_conf_t *) conf, path, retval);
 

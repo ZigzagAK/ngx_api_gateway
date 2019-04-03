@@ -30,8 +30,16 @@ typedef struct {
     ngx_array_t                     backends;
     ngx_str_t                       var;
     ngx_http_api_gateway_mapping_t  map;
+} ngx_http_api_gateway_conf_t;
+
+typedef struct {
+    ngx_array_t   entries;
 } ngx_http_api_gateway_loc_conf_t;
 
+
+ngx_int_t
+ngx_api_gateway_router_init_conf(ngx_conf_t *cf,
+    ngx_http_api_gateway_conf_t *conf);
 
 char * ngx_api_gateway_router(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);

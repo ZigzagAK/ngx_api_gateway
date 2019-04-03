@@ -4,6 +4,25 @@
 #include <ngx_http.h>
 
 
+ngx_int_t
+ngx_api_gateway_router_init_conf(ngx_conf_t *cf,
+    ngx_http_api_gateway_conf_t *conf)
+{
+    if (NGX_ERROR == ngx_array_init(&conf->backends, cf->pool,
+                                    10, sizeof(ngx_str_t)))
+        return NGX_ERROR;
+
+    if (NGX_ERROR == ngx_array_init(&conf->map.regex, cf->pool,
+                                    10, sizeof(ngx_mapping_regex_t)))
+        return NGX_ERROR;
+
+    if (NGX_ERROR == ngx_trie_init(cf->pool, &conf->map.tree))
+        return NGX_ERROR;
+
+    return NGX_OK;
+}
+    
+
 char *
 ngx_api_gateway_router(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -11,27 +30,35 @@ ngx_api_gateway_router(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_str_t                        *value, *s;
     ngx_uint_t                        j;
     ngx_conf_post_t                  *post = cmd->post;
+    ngx_http_api_gateway_conf_t      *gateway_conf;
+
+    gateway_conf = ngx_array_push(&glcf->entries);
+    if (gateway_conf == NULL
+        || ngx_api_gateway_router_init_conf(cf, gateway_conf) == NGX_ERROR) {
+        ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "no memory");
+        return NGX_CONF_ERROR;
+    }
 
     value = cf->args->elts;
 
-    glcf->var = value[1];
-    if (glcf->var.data[0] != '$') {
+    gateway_conf->var = value[1];
+    if (gateway_conf->var.data[0] != '$') {
         ngx_conf_log_error(NGX_LOG_ERR, cf, 0,
                 "required '$' as variable prefix");
         return NGX_CONF_ERROR;
     }
 
-    glcf->var.data++;
-    glcf->var.len--;
+    gateway_conf->var.data++;
+    gateway_conf->var.len--;
 
     for (j = 2; j < cf->args->nelts; j++) {
-        s = ngx_array_push(&glcf->backends);
+        s = ngx_array_push(&gateway_conf->backends);
         if (s == NULL)
             return NGX_CONF_ERROR;
         *s = value[j];
     }
 
-    return post->post_handler(cf, cmd, conf);
+    return post->post_handler(cf, cmd, gateway_conf);
 }
 
 

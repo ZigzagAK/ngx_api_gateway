@@ -62,7 +62,7 @@ ngx_str_t ngx_strdup(ngx_pool_t *pool, u_char *s, size_t len);
 
 ngx_int_t ngx_conf_add_dump(ngx_conf_t *cf, ngx_str_t *filename);
 
-typedef ngx_int_t (*on_key_t)(ngx_str_t path,
+typedef ngx_int_t (*on_key_t)(ngx_str_t path, yaml_char_t *key, size_t key_len,
     ngx_pool_t *pool, yaml_parser_t *parser, ngx_template_conf_t *conf,
     ngx_str_t *retval);
 

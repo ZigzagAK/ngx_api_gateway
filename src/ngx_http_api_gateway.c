@@ -115,17 +115,10 @@ ngx_api_gateway_create_loc_conf(ngx_conf_t *cf)
     if (glcf == NULL)
         return NULL;
 
-    if (NGX_ERROR == ngx_array_init(&glcf->backends, cf->pool,
-                                    10, sizeof(ngx_str_t)))
+    if (NGX_ERROR == ngx_array_init(&glcf->entries, cf->pool,
+                                    10, sizeof(ngx_http_api_gateway_conf_t)))
         return NULL;
 
-    if (NGX_ERROR == ngx_array_init(&glcf->map.regex, cf->pool,
-                                    10, sizeof(ngx_mapping_regex_t)))
-        return NULL;
-
-    if (NGX_ERROR == ngx_trie_init(cf->pool, &glcf->map.tree))
-        return NULL;
-    
     return glcf;
 }
 
@@ -161,34 +154,40 @@ ngx_api_gateway_create_mappings(ngx_conf_t *cf,
     ngx_http_api_gateway_loc_conf_t *glcf)
 {
     ngx_api_gateway_main_conf_t  *gmcf;
+    ngx_http_api_gateway_conf_t  *gateway_conf;
     ngx_api_gateway_conf_t       *conf;
     ngx_template_list_t          *list;
-    ngx_uint_t                    j, i;
+    ngx_uint_t                    k, j, i;
     ngx_str_t                    *backend;
 
     static ngx_str_t api = ngx_string("api");
 
     gmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_api_gateway_module);
 
-    backend = glcf->backends.elts;
+    gateway_conf = glcf->entries.elts;
 
-    for (j = 0; j < glcf->backends.nelts; j++) {
+    for (k = 0; k < glcf->entries.nelts; k++) {
 
-        conf = ngx_api_gateway_create_lookup_backend(gmcf, backend[j]);
-        if (conf == NULL)
-            continue;
+        backend = gateway_conf[k].backends.elts;
 
-        list = conf->lists.elts;
+        for (j = 0; j < gateway_conf[k].backends.nelts; j++) {
 
-        for (i = 0; i < conf->lists.nelts; i++) {
-
-            if (ngx_memn2cmp(list[i].key.data, api.data,
-                             list[i].key.len, api.len) != 0)
+            conf = ngx_api_gateway_create_lookup_backend(gmcf, backend[j]);
+            if (conf == NULL)
                 continue;
 
-            if (ngx_api_gateway_router_build(cf->pool, &glcf->map,
-                    conf->base.name, list[i]) == NGX_ERROR)
-                return NGX_ERROR;
+            list = conf->lists.elts;
+
+            for (i = 0; i < conf->lists.nelts; i++) {
+
+                if (ngx_memn2cmp(list[i].key.data, api.data,
+                                 list[i].key.len, api.len) != 0)
+                    continue;
+
+                if (ngx_api_gateway_router_build(cf->pool, &gateway_conf[k].map,
+                        conf->base.name, list[i]) == NGX_ERROR)
+                    return NGX_ERROR;
+            }
         }
     }
 
@@ -202,19 +201,19 @@ ngx_api_gateway_merge_loc_conf(ngx_conf_t *cf,
 {
     ngx_http_api_gateway_loc_conf_t  *parent;
     ngx_http_api_gateway_loc_conf_t  *child;
-    ngx_str_t                        *backend, *c;
+    ngx_http_api_gateway_conf_t      *gateway_conf, *c;
     ngx_uint_t                        j;
 
     parent = prev;
     child = conf;
 
-    backend = parent->backends.elts;
+    gateway_conf = parent->entries.elts;
 
-    for (j = 0; j < parent->backends.nelts; j++) {
-        c = ngx_array_push(&child->backends);
+    for (j = 0; j < parent->entries.nelts; j++) {
+        c = ngx_array_push(&child->entries);
         if (c == NULL)
             return NGX_CONF_ERROR;
-        *c = backend[j];
+        *c = gateway_conf[j];
     }
 
     if (ngx_api_gateway_create_mappings(cf, child) == NGX_OK)
@@ -272,14 +271,12 @@ ngx_http_api_gateway_init_worker(ngx_cycle_t *cycle)
 
 static ngx_int_t
 ngx_api_gateway_router_map(ngx_http_request_t *r,
+    ngx_http_api_gateway_conf_t *gateway_conf,
     ngx_http_variable_value_t *retval)
 {
-    ngx_http_api_gateway_loc_conf_t  *glcf;
-    ngx_str_t                         upstream;
+    ngx_str_t  upstream;
 
-    glcf = ngx_http_get_module_loc_conf(r, ngx_http_api_gateway_module);
-
-    switch (ngx_api_gateway_router_match(r->pool, &glcf->map,
+    switch (ngx_api_gateway_router_match(r->pool, &gateway_conf->map,
                 &r->uri, &upstream)) {
 
         case NGX_OK:
@@ -303,10 +300,14 @@ static ngx_int_t
 ngx_api_gateway_router_var(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data)
 {
+    ngx_http_api_gateway_conf_t  *gateway_conf;
+
+    gateway_conf = (ngx_http_api_gateway_conf_t *) data;
+
     v->valid = 1;
     v->not_found = 0;
 
-    if (ngx_api_gateway_router_map(r, v) == NGX_OK)
+    if (ngx_api_gateway_router_map(r, gateway_conf, v) == NGX_OK)
         return NGX_OK;
 
     v->not_found = 1;
@@ -317,15 +318,16 @@ ngx_api_gateway_router_var(ngx_http_request_t *r,
 static char *
 ngx_api_gateway_router_add_variable(ngx_conf_t *cf, void *post, void *data)
 {
-    ngx_http_api_gateway_loc_conf_t  *glcf = data;
-    ngx_http_variable_t              *var;
+    ngx_http_api_gateway_conf_t  *gateway_conf = data;
+    ngx_http_variable_t          *var;
 
-    var = ngx_http_add_variable(cf, &glcf->var, NGX_HTTP_VAR_CHANGEABLE);
+    var = ngx_http_add_variable(cf, &gateway_conf->var,
+                                NGX_HTTP_VAR_CHANGEABLE);
     if (var == NULL)
         return NGX_CONF_ERROR;
 
     var->get_handler = ngx_api_gateway_router_var;
-    var->data = 0;
+    var->data = (uintptr_t) gateway_conf;
 
     return NGX_CONF_OK;
 }

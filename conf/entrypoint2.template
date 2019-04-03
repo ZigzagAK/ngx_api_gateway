@@ -12,7 +12,9 @@ server {
 
         {{location.directives}}
 
-        api_gateway_router $backend {{backends}};
+        api_gateway_router $backend  {{backends}};
+        api_gateway_router $first    {{first.backends}};
+        api_gateway_router $second   {{second.backends}};
 
         proxy_connect_timeout {{proxy.connect_timeout}};
         proxy_read_timeout {{proxy.read_timeout}};
@@ -21,7 +23,17 @@ server {
             proxy_pass {{proxy.protocol}}://$backend;
         }
 
-        if ($backend = '') {
+        if ($first) {
+            proxy_pass {{proxy.protocol}}://$first;
+        }
+
+        if ($second) {
+            proxy_pass {{proxy.protocol}}://$second;
+        }
+
+        set $a $backend$first$second;
+
+        if ($a = '') {
             return 404 'No route';
         }
     }

@@ -352,7 +352,9 @@ ngx_template_parse_entry(ngx_pool_t *pool, yaml_parser_t *parser,
 
                         ngx_str_null(&retval);
 
-                        rc = (*pfkey)(key, pool, parser, conf, &retval);
+                        rc = (*pfkey)(key, event.data.scalar.value,
+                                event.data.scalar.length,
+                                pool, parser, conf, &retval);
 
                         if (rc == NGX_OK) {
 
