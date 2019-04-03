@@ -2,8 +2,8 @@
  * Copyright (C) Aleksey Konovkin (alkon2000@mail.ru).
  */
 
-#ifndef NGX_TEMPLATING_H
-#define NGX_TEMPLATING_H
+#ifndef NGX_TEMPLATE_H
+#define NGX_TEMPLATE_H
 
 
 #include <ngx_config.h>
@@ -71,4 +71,4 @@ ngx_int_t ngx_template_conf_parse_yaml(ngx_pool_t *pool, FILE *f,
 
 ngx_int_t lookup(ngx_array_t *templates, ngx_str_t key, ngx_str_t *retval);
 
-#endif /* NGX_TEMPLATING_H */
+#endif /* NGX_TEMPLATE_H */

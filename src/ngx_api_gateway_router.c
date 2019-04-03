@@ -4,7 +4,6 @@
 #include <ngx_http.h>
 
 
-
 char *
 ngx_api_gateway_router(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -45,18 +44,44 @@ ngx_api_gateway_router_build(ngx_pool_t *pool,
     ngx_uint_t            j;
     u_char                errstr[NGX_MAX_CONF_ERRSTR];
     ngx_regex_compile_t   rc;
+    ngx_str_t             path;
 
     for (j = 0; j < entries.nelts; j++) {
+
+        path = entries.elts[j];
+
+        if (path.data[0] != '~') {
+
+            if (ngx_trie_set(&m->tree, path, backend) == NGX_ERROR)
+                goto nomem;
+
+            continue;
+        }
 
         regex = ngx_array_push(&m->regex);
         if (regex == NULL)
             goto nomem;
 
+        path.data++;
+        path.len--;
+
+        while (path.len > 0 && isspace(*path.data)) {
+            path.data++;
+            path.len--;
+        }
+
+        if (path.len == 0) {
+
+            ngx_log_error(NGX_LOG_EMERG, pool->log, 0,
+                "%V: empty regex", &backend);
+            return NGX_ERROR;
+        }
+
         regex->backend = backend;
 
         ngx_memzero(&rc, sizeof(ngx_regex_compile_t));
 
-        rc.pattern = entries.elts[j];
+        rc.pattern = path;
         rc.pool = pool;
         rc.err.len = NGX_MAX_CONF_ERRSTR;
         rc.err.data = errstr;
@@ -84,12 +109,29 @@ nomem:
 
 
 ngx_int_t
-ngx_api_gateway_router_match(ngx_http_api_gateway_mapping_t *m,
+ngx_api_gateway_router_match(ngx_pool_t *temp_pool,
+    ngx_http_api_gateway_mapping_t *m,
     ngx_str_t *uri, ngx_str_t *upstream)
 {
     ngx_uint_t            j;
     ngx_mapping_regex_t  *regex;
     int                   captures[3];
+
+    switch (ngx_trie_find(&m->tree, uri, upstream, temp_pool))  {
+
+        case NGX_OK:
+
+            return NGX_OK;
+
+        case NGX_DECLINED:
+
+            break;
+
+        case NGX_ERROR:
+        default:
+
+            return NGX_ERROR;
+    }
 
     regex = m->regex.elts;
 

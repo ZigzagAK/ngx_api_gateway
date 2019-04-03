@@ -4,8 +4,9 @@ backends2:
   - name: app3
     api:
       - /app3/fun1
-      - /app3/fun2
+      - ~ ^/app3/fun2
       - /app3/fun3
+      - /app3/*/hello/*
     dns:
       update: 60s
     server:

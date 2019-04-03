@@ -123,6 +123,9 @@ ngx_api_gateway_create_loc_conf(ngx_conf_t *cf)
                                     10, sizeof(ngx_mapping_regex_t)))
         return NULL;
 
+    if (NGX_ERROR == ngx_trie_init(cf->pool, &glcf->map.tree))
+        return NULL;
+    
     return glcf;
 }
 
@@ -276,14 +279,23 @@ ngx_api_gateway_router_map(ngx_http_request_t *r,
 
     glcf = ngx_http_get_module_loc_conf(r, ngx_http_api_gateway_module);
 
-    if (ngx_api_gateway_router_match(&glcf->map, &r->uri,
-                                     &upstream) == NGX_OK) {
-        retval->data = upstream.data;
-        retval->len = upstream.len;
-        return NGX_OK;
+    switch (ngx_api_gateway_router_match(r->pool, &glcf->map,
+                &r->uri, &upstream)) {
+
+        case NGX_OK:
+
+            retval->data = upstream.data;
+            retval->len = upstream.len;
+
+            return NGX_OK;
+
+        case NGX_DECLINED:
+
+            return NGX_DECLINED;
+            
     }
 
-    return NGX_DECLINED;
+    return NGX_ERROR;
 }
 
 
@@ -308,8 +320,7 @@ ngx_api_gateway_router_add_variable(ngx_conf_t *cf, void *post, void *data)
     ngx_http_api_gateway_loc_conf_t  *glcf = data;
     ngx_http_variable_t              *var;
 
-    var = ngx_http_add_variable(cf, &glcf->var,
-            NGX_HTTP_VAR_NOCACHEABLE|NGX_HTTP_VAR_CHANGEABLE);
+    var = ngx_http_add_variable(cf, &glcf->var, NGX_HTTP_VAR_CHANGEABLE);
     if (var == NULL)
         return NGX_CONF_ERROR;
 
