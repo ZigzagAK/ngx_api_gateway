@@ -105,11 +105,30 @@ ngx_trie_set(ngx_trie_t *trie, ngx_str_t path, ngx_str_t value)
 
     word = parts.elts;
 
-    for (j = 0; j < parts.nelts; j++) {
+    for (j = 0; node != NULL && j < parts.nelts; j++) {
 
-        next = ngx_trie_insert_node(trie->pool, &node->next, word[j]);
-        if (j == parts.nelts - 1)
+        if (value.data != NULL) {
+
+            // insert
+
+            next = ngx_trie_insert_node(trie->pool, &node->next, word[j]);
+            if (next == NULL)
+                return NGX_ERROR;
+
+        } else {
+
+            // delete
+
+            next = ngx_trie_lookup(&node->next, word[j]);
+            if (next == NULL)
+                break;
+
+        }
+
+        if (j == parts.nelts - 1) {
+            next->path = path;
             next->value = value;
+        }
 
         node = next;
     }
@@ -119,7 +138,15 @@ ngx_trie_set(ngx_trie_t *trie, ngx_str_t path, ngx_str_t value)
 
 
 ngx_int_t
-ngx_trie_find(ngx_trie_t *trie, ngx_str_t *path, ngx_str_t *retval,
+ngx_trie_delete(ngx_trie_t *trie, ngx_str_t path)
+{
+    static ngx_str_t  null = ngx_null_string;
+    return ngx_trie_set(trie, path, null);
+}
+
+
+ngx_int_t
+ngx_trie_find(ngx_trie_t *trie, ngx_str_t *path, ngx_keyval_t *retval,
     ngx_pool_t *temp_pool)
 {
     ngx_array_t       parts;
@@ -149,7 +176,8 @@ ngx_trie_find(ngx_trie_t *trie, ngx_str_t *path, ngx_str_t *retval,
     }
 
     if (last != NULL) {
-        *retval = last->value;
+        retval->key = last->path;
+        retval->value = last->value;
         return NGX_OK;
     }
 

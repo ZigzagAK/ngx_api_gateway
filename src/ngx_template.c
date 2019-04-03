@@ -802,11 +802,11 @@ done:
 
 
 static u_char *
-ngx_strchrr(ngx_str_t *s)
+ngx_strchrr(ngx_str_t *s, u_char ch)
 {
     u_char  *c;
-    for (c = s->data + s->len - 1; c > s->data && *c != '.'; c--);
-    return *c == '.' ? c : s->data + s->len;
+    for (c = s->data + s->len - 1; c > s->data && *c != ch; c--);
+    return *c == ch ? c : s->data + s->len;
 }
 
 
@@ -821,7 +821,7 @@ ngx_template_tag(ngx_conf_t *cf, ngx_str_t keyfile, ngx_str_t *tag)
     }
     tag->len = keyfile.len;
     ngx_memcpy(tag->data, keyfile.data, keyfile.len);
-    c = ngx_strchrr(tag);
+    c = ngx_strchrr(tag, '.');
     *c = 0;
     tag->len = c - tag->data;
     return NGX_OK;

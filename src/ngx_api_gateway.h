@@ -31,6 +31,7 @@ typedef struct {
     ngx_array_t          templates;
     ngx_msec_t           timeout;
     ngx_msec_t           interval;
+    ngx_int_t            request_path_index;
 } ngx_api_gateway_main_conf_t;
 
 

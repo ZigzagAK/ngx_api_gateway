@@ -40,6 +40,7 @@ ngx_api_gateway_create_main_conf(ngx_conf_t *cf)
 
     amcf->interval = NGX_CONF_UNSET_MSEC;
     amcf->timeout = NGX_CONF_UNSET_MSEC;
+    amcf->request_path_index = NGX_ERROR;
 
     return amcf;
 }
@@ -433,7 +434,7 @@ ngx_api_gateway_fetch_handler(ngx_int_t rc,
     FILE               *f;
     ngx_api_gateway_t   t;
     ngx_tm_t            tm;
-    u_char              backup[10240];
+    u_char              backup[keyfile.len + 64];
 
     if (rc == NGX_ERROR) {
 
@@ -485,7 +486,7 @@ ngx_api_gateway_fetch_handler(ngx_int_t rc,
     ngx_sprintf(backup, "%V.%4d%02d%02d%02d%02d%02d", &keyfile,
         tm.tm_year, tm.tm_mon, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
 
-    if (rename((const char *) keyfile.data, (const char *) backup) != 0) {
+    if (ngx_rename_file(keyfile.data, backup) != 0) {
         ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, errno,
                       "ngx_api_gateway: can't backup %V", &keyfile);
         goto done;

@@ -138,16 +138,19 @@ nomem:
 ngx_int_t
 ngx_api_gateway_router_match(ngx_pool_t *temp_pool,
     ngx_http_api_gateway_mapping_t *m,
-    ngx_str_t *uri, ngx_str_t *upstream)
+    ngx_str_t *uri, ngx_str_t *path, ngx_str_t *upstream)
 {
     ngx_uint_t            j;
     ngx_mapping_regex_t  *regex;
     int                   captures[3];
+    ngx_keyval_t          retval;
 
-    switch (ngx_trie_find(&m->tree, uri, upstream, temp_pool))  {
+    switch (ngx_trie_find(&m->tree, uri, &retval, temp_pool)) {
 
         case NGX_OK:
 
+            *path = retval.key;
+            *upstream = retval.value;
             return NGX_OK;
 
         case NGX_DECLINED:
@@ -166,6 +169,7 @@ ngx_api_gateway_router_match(ngx_pool_t *temp_pool,
 
         if (ngx_regex_exec(regex[j].re, uri, captures, 3) > 0) {
 
+            *path = regex[j].pattern;
             *upstream = regex[j].backend;
             return NGX_OK;
         }

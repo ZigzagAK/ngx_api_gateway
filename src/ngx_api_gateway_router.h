@@ -53,6 +53,6 @@ ngx_api_gateway_router_build(ngx_pool_t *pool,
 ngx_int_t
 ngx_api_gateway_router_match(ngx_pool_t *temp_pool,
     ngx_http_api_gateway_mapping_t *m,
-    ngx_str_t *uri, ngx_str_t *upstream);
+    ngx_str_t *uri, ngx_str_t *path, ngx_str_t *upstream);
 
 #endif /* NGX_API_GATEWAY_ROUTER_H */

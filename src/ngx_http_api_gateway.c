@@ -20,9 +20,16 @@ static char * ngx_api_gateway_merge_loc_conf(ngx_conf_t *cf,
     void *prev, void *conf);
 
 
+static ngx_int_t
+ngx_api_gateway_pre_conf(ngx_conf_t *cf);
+
+static ngx_int_t
+ngx_api_gateway_post_conf(ngx_conf_t *cf);
+
+
 static ngx_http_module_t ngx_http_api_gateway_ctx = {
-    NULL,                              /* preconfiguration */
-    NULL,                              /* postconfiguration */
+    ngx_api_gateway_pre_conf,     /* preconfiguration */
+    ngx_api_gateway_post_conf,         /* postconfiguration */
     ngx_api_gateway_create_main_conf,  /* create main configuration */
     ngx_api_gateway_init_main_conf,    /* init main configuration */
     NULL,                              /* create server configuration */
@@ -104,6 +111,60 @@ ngx_module_t ngx_http_api_gateway_module = {
     NULL,                              /* exit master */
     NGX_MODULE_V1_PADDING
 };
+
+
+static ngx_int_t
+ngx_api_gateway_router_request_path_var(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, uintptr_t data)
+{
+    return NGX_OK;
+}
+
+static ngx_http_variable_t
+ngx_http_api_gateway_vars[] = {
+
+    { ngx_string("request_path"), NULL,
+      ngx_api_gateway_router_request_path_var, 0,
+      NGX_HTTP_VAR_CHANGEABLE, 1 },
+
+    { ngx_null_string, NULL, NULL, 0, 0, 0 }
+
+};
+
+
+static ngx_int_t
+ngx_api_gateway_pre_conf(ngx_conf_t *cf)
+{
+    ngx_http_variable_t  *var, *v;
+
+    for (v = ngx_http_api_gateway_vars; v->name.len; v++) {
+
+        var = ngx_http_add_variable(cf, &v->name, v->flags);
+        if (var == NULL)
+            return NGX_ERROR;
+
+        var->get_handler = v->get_handler;
+        var->data = v->data;
+    }
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_api_gateway_post_conf(ngx_conf_t *cf)
+{
+    ngx_api_gateway_main_conf_t  *amcf;
+
+    static ngx_str_t  request_path_var = ngx_string("request_path");
+
+    amcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_api_gateway_module);
+
+    amcf->request_path_index = ngx_http_get_variable_index(cf,
+        &request_path_var);
+
+    return NGX_OK;
+}
 
 
 static void *
@@ -274,15 +335,28 @@ ngx_api_gateway_router_map(ngx_http_request_t *r,
     ngx_http_api_gateway_conf_t *gateway_conf,
     ngx_http_variable_value_t *retval)
 {
-    ngx_str_t  upstream;
+    ngx_api_gateway_main_conf_t  *amcf;
+    ngx_variable_value_t         *request_path_var;
+    ngx_str_t                     path;
+    ngx_str_t                     upstream;
+
+    amcf = ngx_http_get_module_main_conf(r, ngx_http_api_gateway_module);
 
     switch (ngx_api_gateway_router_match(r->pool, &gateway_conf->map,
-                &r->uri, &upstream)) {
+                &r->uri, &path, &upstream)) {
 
         case NGX_OK:
 
             retval->data = upstream.data;
             retval->len = upstream.len;
+
+            request_path_var = ngx_http_get_indexed_variable(r,
+                amcf->request_path_index);
+
+            request_path_var->not_found = 0;
+            request_path_var->valid = 1;
+            request_path_var->data = path.data;
+            request_path_var->len = path.len;
 
             return NGX_OK;
 
