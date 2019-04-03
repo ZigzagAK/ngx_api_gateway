@@ -1,15 +1,26 @@
 ---
-entrypoints:
+entrypoints2:
 
   - name: app3
     listen: 11111
+    server:
+      directives:
+        - set $variable1 1;\n
+        - set $variable2 2;
+      locations:
+        - location ~* ^/app1/.+\.(jpg|gif|png)$ { proxy_pass http://app1; }\n
+        - location ~* ^/app2/.+\.(jpg|gif|png)$ { proxy_pass http://app2; }
+    location:
+      directives:
+        - set $variable3 3;
+        - set $variable4 4;
     auth:
       request: /auth_stub
     proxy:
       connect_timeout: 100s
       read_timeout: 600s
       protocol: http
-    expose:
+    backends:
       - app1
       - app2
       - app3

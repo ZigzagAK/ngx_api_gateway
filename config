@@ -2,9 +2,11 @@ ngx_addon_name="ngx_template_module ngx_http_api_gateway_module ngx_stream_api_g
 
 SRCS="$ngx_addon_dir/src/ngx_api_gateway.c         \
       $ngx_addon_dir/src/ngx_http_api_gateway.c    \
-      $ngx_addon_dir/src/ngx_stream_api_gateway.c"
+      $ngx_addon_dir/src/ngx_stream_api_gateway.c  \
+      $ngx_addon_dir/src/ngx_api_gateway_router.c"
 
-DEPS="$ngx_addon_dir/src/ngx_api_gateway.h"
+DEPS="$ngx_addon_dir/src/ngx_api_gateway.h \
+      $ngx_addon_dir/src/ngx_api_gateway_router.h"
 
 CORE_MODULE_SRCS="$ngx_addon_dir/src/ngx_template.c         \
                   $ngx_addon_dir/src/ngx_template_module.c"

@@ -10,10 +10,6 @@
 #define DEFAULT_INTERVAL (60000)
 
 
-const char *GW_Entrypoints = "entrypoints";
-const char *GW_Backends = "backends";
-
-
 typedef void (*ngx_http_send_request_pt)(ngx_int_t rc,
     ngx_keyval_t *headers, ngx_uint_t nheaders,
     ngx_str_t *body, void *data);
@@ -59,22 +55,33 @@ ngx_api_gateway_init_main_conf(ngx_conf_t *cf, void *conf)
 }
 
 
-static ngx_str_t  KEY_expose = ngx_string("expose");
+static ngx_str_t  KEYS_seq[] = {
+
+    ngx_string("api"),
+    ngx_string("backends"),
+    ngx_string("server.directives"),
+    ngx_string("server.locations"),
+    ngx_string("location.directives"),
+    ngx_string("servers")
+
+};
+static ngx_int_t KEYS_seqn = sizeof(KEYS_seq) / sizeof(KEYS_seq[0]);
 
 
 static ngx_int_t
-ngx_api_gateway_parse_expose(ngx_pool_t *pool, yaml_parser_t *parser,
-    ngx_api_gateway_conf_t *conf, ngx_str_t *retval)
+ngx_api_gateway_parse_seq(ngx_pool_t *pool, yaml_parser_t *parser,
+    ngx_api_gateway_conf_t *conf, ngx_str_t path, ngx_str_t *retval)
 {
-    ngx_array_t         exposes;
-    ngx_str_t          *expose;
-    yaml_event_t        event;
-    yaml_event_type_t   type;
-    size_t              size = 0;
-    ngx_int_t           j;
-    u_char             *c;
+    ngx_array_t           entries;
+    ngx_str_t            *entry;
+    yaml_event_t          event;
+    yaml_event_type_t     type;
+    size_t                size = 0;
+    ngx_uint_t            j;
+    u_char               *c;
+    ngx_template_list_t  *list_entry;
     
-    if (ngx_array_init(&exposes, pool, 10, sizeof(ngx_str_t)) != NGX_OK)
+    if (ngx_array_init(&entries, pool, 10, sizeof(ngx_str_t)) != NGX_OK)
         goto nomem;
 
     if (!yaml_parser_parse(parser, &event))
@@ -96,16 +103,16 @@ ngx_api_gateway_parse_expose(ngx_pool_t *pool, yaml_parser_t *parser,
             
             case YAML_SCALAR_EVENT:
 
-                expose = ngx_array_push(&exposes);
-                if (expose == NULL)
+                entry = ngx_array_push(&entries);
+                if (entry == NULL)
                     goto nomem_local;
 
-                *expose = ngx_strdup(pool, event.data.scalar.value,
+                *entry = ngx_strdup(pool, event.data.scalar.value,
                                   event.data.scalar.length);
-                if (expose->data == NULL)
+                if (entry->data == NULL)
                     goto nomem_local;
 
-                size += expose->len + 1;
+                size += entry->len + 1;
                 
                 break;
 
@@ -129,10 +136,29 @@ nomem_local:
 
     } while (type != YAML_SEQUENCE_END_EVENT);
 
-    conf->expose = exposes.elts;
-    conf->nexpose = exposes.nelts;
+    if (conf->lists.elts == NULL) {
+        if (ngx_array_init(&conf->lists, pool, 10,
+                sizeof(ngx_template_list_t)) != NGX_OK)
+            goto nomem;
+    }
+
+    list_entry = ngx_array_push(&conf->lists);
+    if (list_entry == NULL)
+        goto nomem;
+
+    list_entry->key = path;
+    list_entry->elts = entries.elts;
+    list_entry->nelts = entries.nelts;
 
     if (retval != NULL) {
+
+        if (size == 0) {
+            retval->data = ngx_pcalloc(pool, 1);
+            if (retval->data == NULL)
+                goto nomem;
+            retval->len = 0;
+            return NGX_OK;
+        }
 
         retval->len = size - 1;
         retval->data = ngx_palloc(pool, size);
@@ -141,8 +167,8 @@ nomem_local:
 
         c = retval->data;
 
-        for (j = 0; j < conf->nexpose; j++)
-            c = ngx_sprintf(c, "%V ", &conf->expose[j]);
+        for (j = 0; j < list_entry->nelts; j++)
+            c = ngx_sprintf(c, "%V ", &list_entry->elts[j]);
         retval->data[retval->len] = 0;
     }
 
@@ -156,32 +182,35 @@ nomem:
 
 
 static ngx_int_t
-ngx_api_gateway_handle_key(yaml_char_t *key, size_t length,
+ngx_api_gateway_handle_key(ngx_str_t path,
     ngx_pool_t *pool, yaml_parser_t *parser, ngx_template_conf_t *conf,
     ngx_str_t *retval)
 {
-    if (ngx_memn2cmp(KEY_expose.data, key, KEY_expose.len, length) == 0)
-        return ngx_api_gateway_parse_expose(pool, parser,
-                (ngx_api_gateway_conf_t *) conf, retval);
+    ngx_int_t  j;
+
+    for (j = 0; j < KEYS_seqn; j++)
+        if (ngx_memn2cmp(KEYS_seq[j].data, path.data,
+                         KEYS_seq[j].len, path.len) == 0)
+            return ngx_api_gateway_parse_seq(pool, parser,
+                    (ngx_api_gateway_conf_t *) conf, path, retval);
 
     return NGX_DONE;
 }
 
 
 static ngx_int_t
-ngx_api_gateway_template_apply(ngx_conf_t *cf, ngx_api_gateway_t *t,
-    const char *tag)
+ngx_api_gateway_template_apply(ngx_conf_t *cf, ngx_api_gateway_t *t)
 {
     ngx_api_gateway_conf_t  *conf;
     FILE                    *f;
     ngx_int_t                rc = NGX_OK;
-    ngx_int_t                i;
-    ngx_uint_t               j;
+    ngx_uint_t               i, j, n;
     char                    *rv;
     ngx_conf_file_t          conf_file;
     ngx_conf_file_t         *prev = cf->conf_file;
     ngx_str_t                keyfile = t->base.keyfile;
-    ngx_str_t                dump_name;
+    ngx_template_list_t     *entries;
+    volatile ngx_cycle_t    *pc;
 
     ngx_log_error(NGX_LOG_NOTICE, cf->log, 0, "%V:%V", &t->base.filename,
                   &keyfile);
@@ -206,8 +235,14 @@ ngx_api_gateway_template_apply(ngx_conf_t *cf, ngx_api_gateway_t *t,
         goto done;
     }
 
-    rc = ngx_template_conf_parse_yaml(cf->pool, f, &t->base, tag,
+    pc = ngx_cycle;
+    ngx_cycle = cf->cycle;
+
+    rc = ngx_template_conf_parse_yaml(cf->pool, f, &t->base,
         ngx_api_gateway_handle_key);
+
+    ngx_cycle = pc;
+
     if (rc != NGX_OK)
         goto done;
 
@@ -230,10 +265,15 @@ ngx_api_gateway_template_apply(ngx_conf_t *cf, ngx_api_gateway_t *t,
             ngx_log_error(NGX_LOG_NOTICE, cf->log, 0, "    %V:%V",
                 &conf[j].base.keys[i].key, &conf[j].base.keys[i].value);
 
-        ngx_log_error(NGX_LOG_NOTICE, cf->log, 0, "  expose");
-        for (i = 0; i < conf[j].nexpose; i++) {
-            ngx_log_error(NGX_LOG_NOTICE, cf->log, 0, "    %V",
-                          &conf[j].expose[i]);
+        entries = conf[j].lists.elts;
+        
+        for (n = 0; n < conf[j].lists.nelts; n++) {
+
+            ngx_log_error(NGX_LOG_NOTICE, cf->log, 0, "  %V", &entries[n].key);
+
+            for (i = 0; i < entries[n].nelts; i++)
+                ngx_log_error(NGX_LOG_NOTICE, cf->log, 0, "    %V",
+                              &entries[n].elts[i]);
         }
 
         ngx_log_error(NGX_LOG_NOTICE, cf->log, 0,
@@ -248,7 +288,19 @@ ngx_api_gateway_template_apply(ngx_conf_t *cf, ngx_api_gateway_t *t,
         conf_file.buffer = ngx_create_temp_buf(cf->temp_pool,
             conf[j].base.conf.len + 1);
         conf_file.file.log = cf->log;
-        conf_file.file.name = t->base.filename;
+        if (conf_file.buffer == NULL) {
+            rc = NGX_ERROR;
+            goto done;
+        }
+        conf_file.file.log = cf->log;
+        conf_file.file.name.data = ngx_pcalloc(cf->temp_pool,
+            conf[j].base.name.len + t->base.tag.len + 2);
+        if (conf_file.file.name.data == NULL) {
+            rc = NGX_ERROR;
+            goto done;
+        }
+        conf_file.file.name.len = ngx_sprintf(conf_file.file.name.data, "%V:%V",
+            &t->base.tag, &conf[j].base.name) - conf_file.file.name.data;
         conf_file.line = 1;
         conf_file.file.info.st_size = conf[j].base.conf.len + 1;
         conf_file.file.offset = conf_file.file.info.st_size;
@@ -261,15 +313,7 @@ ngx_api_gateway_template_apply(ngx_conf_t *cf, ngx_api_gateway_t *t,
 #endif
            )
         {
-            dump_name.data = ngx_pcalloc(cf->temp_pool,
-                conf[j].base.name.len + ngx_strlen(tag) + 2);
-            if (dump_name.data == NULL) {
-                rc = NGX_ERROR;
-                goto done;
-            }
-            dump_name.len = ngx_sprintf(dump_name.data, "%s:%V",
-                                        tag, &conf[j].base.name) - dump_name.data;
-            if (ngx_conf_add_dump(cf, &dump_name) != NGX_OK) {
+            if (ngx_conf_add_dump(cf, &conf_file.file.name) != NGX_OK) {
                 rc = NGX_ERROR;
                 goto done;
             }
@@ -284,7 +328,7 @@ ngx_api_gateway_template_apply(ngx_conf_t *cf, ngx_api_gateway_t *t,
         rv = ngx_conf_parse(cf, NULL);
 
         if (rv != NGX_CONF_OK)
-            rc = NGX_ERROR;
+            rc = NGX_ABORT;
     }
 
     
@@ -315,7 +359,7 @@ done:
 
 
 static char *
-ngx_api_gateway_template(ngx_conf_t *cf, ngx_api_gateway_t *t, const char *tag)
+ngx_api_gateway_template(ngx_conf_t *cf, ngx_api_gateway_t *t)
 {
     ngx_str_t  *value;
 
@@ -323,6 +367,9 @@ ngx_api_gateway_template(ngx_conf_t *cf, ngx_api_gateway_t *t, const char *tag)
 
     t->base.filename = value[1];
     t->base.keyfile = value[2];
+
+    if (ngx_template_tag(cf, t->base.keyfile, &t->base.tag) == NGX_ERROR)
+        return NGX_CONF_ERROR;
 
     if (cf->args->nelts == 4) {
 
@@ -338,15 +385,16 @@ ngx_api_gateway_template(ngx_conf_t *cf, ngx_api_gateway_t *t, const char *tag)
         }
     }
 
-    if (ngx_api_gateway_template_apply(cf, t, tag) == NGX_OK) 
+    if (ngx_api_gateway_template_apply(cf, t) == NGX_OK) 
         return NGX_CONF_OK;
 
     return NGX_CONF_ERROR;
 }
 
 
-static char *
-ngx_api_gateway_template_directive(ngx_conf_t *cf, void *conf, const char *tag)
+char *
+ngx_api_gateway_template_directive(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf)
 {
     ngx_api_gateway_main_conf_t  *amcf = conf;
     ngx_api_gateway_t            *t = ngx_array_push(&amcf->templates);
@@ -359,27 +407,11 @@ ngx_api_gateway_template_directive(ngx_conf_t *cf, void *conf, const char *tag)
 
     ngx_memzero(t, sizeof(ngx_api_gateway_t));
 
-    t->tag = tag;
-
-    rv = ngx_api_gateway_template(cf, t, tag);
+    rv = ngx_api_gateway_template(cf, t);
     if (rv == NGX_CONF_ERROR)
         amcf->templates.nelts--;
 
     return rv;
-}
-
-
-char *
-ngx_api_gateway_entrypoints(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
-{
-    return ngx_api_gateway_template_directive(cf, conf, GW_Entrypoints);
-}
-
-
-char *
-ngx_api_gateway_backends(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
-{
-    return ngx_api_gateway_template_directive(cf, conf, GW_Backends);
 }
 
 
@@ -433,7 +465,7 @@ ngx_api_gateway_fetch_handler(ngx_int_t rc,
         10, sizeof(ngx_api_gateway_conf_t));
 
     f = fmemopen(body->data, body->len, "r");
-    rc = ngx_template_conf_parse_yaml(ctx->pool, f, &t.base, ctx->t->tag,
+    rc = ngx_template_conf_parse_yaml(ctx->pool, f, &t.base,
         ngx_api_gateway_handle_key);
     fclose(f);
 

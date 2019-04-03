@@ -14,22 +14,16 @@
 #include "ngx_template.h"
 
 
-extern const char *GW_Entrypoints;
-extern const char *GW_Backends;
-
-    
 typedef struct {
     ngx_template_conf_t  base;
     ngx_str_t            url;
-    ngx_str_t           *expose;
-    ngx_int_t            nexpose;
+    ngx_array_t          lists;
 } ngx_api_gateway_conf_t;
 
 
 typedef struct {
     ngx_template_t       base;
     ngx_url_t            url;
-    const char          *tag;
 } ngx_api_gateway_t;
 
 
@@ -40,24 +34,17 @@ typedef struct {
 } ngx_api_gateway_main_conf_t;
 
 
-void *
-ngx_api_gateway_create_main_conf(ngx_conf_t *cf);
+void * ngx_api_gateway_create_main_conf(ngx_conf_t *cf);
 
 
-char *
-ngx_api_gateway_init_main_conf(ngx_conf_t *cf, void *conf);
+char * ngx_api_gateway_init_main_conf(ngx_conf_t *cf, void *conf);
 
 
-char *
-ngx_api_gateway_entrypoints(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+char * ngx_api_gateway_template_directive(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf);
 
 
-char *
-ngx_api_gateway_backends(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
-
-
-void
-ngx_api_gateway_fetch_keys(ngx_api_gateway_main_conf_t *amcf);
+void ngx_api_gateway_fetch_keys(ngx_api_gateway_main_conf_t *amcf);
 
 
 #endif /* NGX_API_GATEWAY_H */

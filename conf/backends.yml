@@ -2,7 +2,7 @@
 backends:
 
   - name: app1
-    expose:
+    api:
       - /app1/fun1
       - /app1/fun2
       - /app1/fun3
@@ -28,7 +28,7 @@ backends:
         match: .*
 
   - name: app2
-    expose:
+    api:
       - /app2/fun1
       - /app2/fun2
     dns:

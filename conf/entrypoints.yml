@@ -3,23 +3,31 @@ entrypoints:
 
   - name: app1
     listen: env(LISTEN_PORT)
+    server:
+      directives: []
+    location:
+      directives: []
     auth:
       request: /auth_stub
     proxy:
       connect_timeout: 10s
       read_timeout: 60s
       protocol: http
-    expose:
+    backends:
       - app1
 
   - name: app2
     listen: 8081
+    server:
+      directives: []
+    location:
+      directives: []
     auth:
       request: /auth_stub
     proxy:
       connect_timeout: 10s
       read_timeout: 60s
       protocol: http
-    expose:
+    backends:
       - app1
       - app2

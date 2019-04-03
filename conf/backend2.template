@@ -1,0 +1,13 @@
+upstream {{name}} {
+    zone shm_{{name}} 256k;
+
+    dns_update {{dns.update}};
+    dns_add_down on;
+
+ {{servers}}
+
+    check passive type=http rise={{check.default.rise}} fall={{check.default.fall}} timeout={{check.default.timeout}} interval={{check.default.interval}};
+    check_request_uri {{check.default.request.method}} {{check.default.request.uri}};
+    check_response_codes {{check.default.response.codes}};
+    check_response_body {{check.response.match}};
+}

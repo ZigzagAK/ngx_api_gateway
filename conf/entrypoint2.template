@@ -3,7 +3,9 @@ server {
 
     default_type text/plain;
 
-    {{server.directives}}
+ {{server.directives}}
+
+ {{server.locations}}
 
     location / {
         auth_request {{auth.request}};
@@ -29,3 +31,4 @@ server {
         return 200;
     }
 }
+

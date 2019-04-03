@@ -7,6 +7,9 @@
 #include <ngx_http.h>
 
 
+extern ngx_module_t  ngx_template_module;
+
+
 void *
 ngx_template_create_main_conf(ngx_cycle_t *cycle)
 {
@@ -145,10 +148,13 @@ lookup_env(ngx_str_t key)
 
 
 static ngx_str_t
-lookup_key(ngx_template_conf_t *conf, ngx_str_t key)
+lookup_key(ngx_pool_t *pool, ngx_template_conf_t *conf, ngx_str_t key)
 {
-    ngx_str_t  s = { 0, NULL };
-    ngx_int_t  j;
+    ngx_str_t   s = { 0, NULL };
+    ngx_uint_t  j;
+
+    if (pool != NULL)
+        key = ngx_strdup(pool, key.data, key.len);
 
     for (j = 0; j < conf->nkeys; j++) {
         if (ngx_memn2cmp(conf->keys[j].key.data, key.data,
@@ -158,7 +164,24 @@ lookup_key(ngx_template_conf_t *conf, ngx_str_t key)
         }
     }
 
-    return lookup_env(s.data != NULL ? s : key);
+    if (s.data == NULL) {
+        // global search
+        lookup(NULL, key, &s);
+    }
+
+    if (s.data != NULL)
+        return lookup_env(s);
+
+    // key not found
+    
+    s = lookup_env(key);
+
+    if (s.data == key.data) {
+        // environment variable not found
+        ngx_str_null(&s);
+    }
+
+    return s;
 }
 
 
@@ -172,6 +195,20 @@ new_chain(ngx_pool_t *pool, size_t size)
     if (out->buf == NULL)
         return NULL;
     return out;
+}
+
+
+static void
+unescape(ngx_str_t *s)
+{
+    u_char  *c;
+    for (c = s->data; c < s->data + s->len; c++) {
+        if (*c == '\\' && *(c + 1) == 'n') {
+            *c = LF;
+            ngx_memmove(c + 1, c + 2, s->data + s->len-- - c - 1);
+            
+        }
+    }
 }
 
 
@@ -218,12 +255,15 @@ transform(ngx_pool_t *pool, ngx_template_conf_t *conf,
 
         out = out->next;
 
-        val = lookup_key(conf, key);
+        val = lookup_key(pool, conf, key);
         if (val.data == NULL) {
             val.data = c1;
             val.len = c2 - c1 + 2;
             ngx_log_error(NGX_LOG_ERR, pool->log, 0, "undefined: %V", &key);
             undefined++;
+        } else {
+            val = transform(pool, conf, val);
+            unescape(&val);
         }
 
         out->next = new_chain(pool, val.len);
@@ -278,6 +318,7 @@ ngx_template_parse_entry(ngx_pool_t *pool, yaml_parser_t *parser,
     yaml_event_t       event;
     ngx_flag_t         is_key = 1;
     ngx_str_t          path[1000];
+    ngx_str_t          key;
     ngx_int_t          level = 0;
     yaml_event_type_t  type;
     ngx_int_t          rc;
@@ -305,13 +346,13 @@ ngx_template_parse_entry(ngx_pool_t *pool, yaml_parser_t *parser,
                     if (path[level].data == NULL)
                         goto nomem_local;
 
+                    key = concat_path(pool, path, level);
+                    
                     if (pfkey) {
 
                         ngx_str_null(&retval);
 
-                        rc = (*pfkey)(event.data.scalar.value,
-                                event.data.scalar.length, pool, parser, conf,
-                                &retval);
+                        rc = (*pfkey)(key, pool, parser, conf, &retval);
 
                         if (rc == NGX_OK) {
 
@@ -321,7 +362,7 @@ ngx_template_parse_entry(ngx_pool_t *pool, yaml_parser_t *parser,
                                 if (kv == NULL)
                                     goto nomem_local;
 
-                                kv->key = concat_path(pool, path, level);
+                                kv->key = key;
                                 if (kv->key.data == NULL)
                                     goto nomem_local;
 
@@ -343,7 +384,7 @@ ngx_template_parse_entry(ngx_pool_t *pool, yaml_parser_t *parser,
                     if (kv == NULL)
                         goto nomem_local;
 
-                    kv->key = concat_path(pool, path, level);
+                    kv->key = key;
                     if (kv->key.data == NULL)
                         goto nomem_local;
 
@@ -408,7 +449,7 @@ nomem:
 
 static ngx_int_t
 ngx_template_parse_entries(ngx_pool_t *pool, yaml_parser_t *parser,
-    ngx_array_t *a, on_key_t pfkey)
+    ngx_template_t *t, on_key_t pfkey)
 {
     ngx_template_conf_t  *conf;
     yaml_event_t          event;
@@ -434,18 +475,26 @@ ngx_template_parse_entries(ngx_pool_t *pool, yaml_parser_t *parser,
 
             case YAML_MAPPING_START_EVENT:
 
-                conf = ngx_array_push(a);
+                conf = ngx_array_push(&t->entries);
                 if (conf == NULL) {
                     yaml_event_delete(&event);
                     goto nomem;
                 }
-                ngx_memzero(conf, a->size);
+                ngx_memzero(conf, t->entries.size);
 
                 rc = ngx_template_parse_entry(pool, parser, conf, pfkey);
                 if (rc != NGX_OK) {
                     yaml_event_delete(&event);
                     return rc;
                 }
+
+                if (conf->name.data == NULL) {
+                    ngx_log_error(NGX_LOG_ERR, pool->log, 0,
+                                  "mandatory tag \"name\" not found in \"%V\"",
+                                  &t->filename);
+                    return NGX_ABORT;
+                }
+
                 break;
 
             case YAML_SEQUENCE_END_EVENT:
@@ -475,7 +524,7 @@ nomem:
 
 ngx_int_t
 ngx_template_conf_parse_yaml(ngx_pool_t *pool, FILE *f,
-    ngx_template_t *t, const char *tag, on_key_t pfkey)
+    ngx_template_t *t, on_key_t pfkey)
 {
     ngx_template_conf_t  *conf;
     yaml_parser_t         parser;
@@ -504,10 +553,9 @@ ngx_template_conf_parse_yaml(ngx_pool_t *pool, FILE *f,
 
             case YAML_SCALAR_EVENT:
 
-                if (ngx_memn2cmp((u_char *) tag, event.data.scalar.value,
-                                 strlen(tag), event.data.scalar.length) == 0) {
-                    rc = ngx_template_parse_entries(pool, &parser,
-                            &t->entries, pfkey);
+                if (ngx_memn2cmp(t->tag.data, event.data.scalar.value,
+                                 t->tag.len, event.data.scalar.length) == 0) {
+                    rc = ngx_template_parse_entries(pool, &parser, t, pfkey);
                     if (rc != NGX_OK)
                         goto done;
                 }
@@ -524,13 +572,17 @@ ngx_template_conf_parse_yaml(ngx_pool_t *pool, FILE *f,
     for (j = 0; j < t->entries.nelts; j++) {
         conf = (ngx_template_conf_t *)
                 ((u_char *) t->entries.elts + j * t->entries.size);
-        conf->filename = t->filename;
         conf->conf = transform(pool, conf, t->template);
         if (conf->conf.data == NULL)
             rc = NGX_ERROR;
     }
 
 done:
+
+    if (rc == NGX_ABORT) {
+        ngx_log_error(NGX_LOG_ERR, pool->log, 0,
+                      "invalid structure \"%V\"", &t->filename);
+    }
 
     yaml_parser_delete(&parser);
     return rc;
@@ -594,19 +646,16 @@ ngx_conf_add_dump(ngx_conf_t *cf, ngx_str_t *filename)
 
 
 static ngx_int_t
-ngx_template_conf_apply(ngx_conf_t *cf, ngx_template_t *t,
-    const char *tag)
+ngx_template_conf_apply(ngx_conf_t *cf, ngx_template_t *t)
 {
     ngx_template_conf_t  *conf;
     ngx_file_t            file;
     ngx_int_t             rc = NGX_OK;
-    ngx_int_t             i;
-    ngx_uint_t            j;
+    ngx_uint_t            i, j;
     char                 *rv;
     ngx_conf_file_t       conf_file;
     ngx_conf_file_t      *prev = cf->conf_file;
     ngx_str_t             keyfile = t->keyfile;
-    ngx_str_t             dump_name;
     
     ngx_conf_log_error(NGX_LOG_NOTICE, cf, 0, "%V:%V", &t->filename, &keyfile);
 
@@ -636,7 +685,7 @@ ngx_template_conf_apply(ngx_conf_t *cf, ngx_template_t *t,
     }
 
     rc = ngx_template_conf_parse_yaml(cf->pool, fdopen(file.fd, "r"),
-        t, tag, NULL);
+        t, NULL);
     if (rc != NGX_OK)
         goto done;
 
@@ -674,8 +723,19 @@ ngx_template_conf_apply(ngx_conf_t *cf, ngx_template_t *t,
 
         conf_file.buffer = ngx_create_temp_buf(cf->temp_pool,
             conf[j].conf.len + 1);
+        if (conf_file.buffer == NULL) {
+            rc = NGX_ERROR;
+            goto done;
+        }
         conf_file.file.log = cf->log;
-        conf_file.file.name = t->filename;
+        conf_file.file.name.data = ngx_pcalloc(cf->temp_pool,
+            conf[j].name.len + t->tag.len + 2);
+        if (conf_file.file.name.data == NULL) {
+            rc = NGX_ERROR;
+            goto done;
+        }
+        conf_file.file.name.len = ngx_sprintf(conf_file.file.name.data, "%V:%V",
+            &t->tag, &conf[j].name) - conf_file.file.name.data;
         conf_file.line = 1;
         conf_file.file.info.st_size = conf[j].conf.len + 1;
         conf_file.file.offset = conf_file.file.info.st_size;
@@ -688,15 +748,7 @@ ngx_template_conf_apply(ngx_conf_t *cf, ngx_template_t *t,
 #endif
            )
         {
-            dump_name.data = ngx_pcalloc(cf->temp_pool,
-                conf[j].name.len + ngx_strlen(tag) + 2);
-            if (dump_name.data == NULL) {
-                rc = NGX_ERROR;
-                goto done;
-            }
-            dump_name.len = ngx_sprintf(dump_name.data, "%s:%V",
-                                        tag, &conf[j].name) - dump_name.data;
-            if (ngx_conf_add_dump(cf, &dump_name) != NGX_OK) {
+            if (ngx_conf_add_dump(cf, &conf_file.file.name) != NGX_OK) {
                 rc = NGX_ERROR;
                 goto done;
             }
@@ -725,11 +777,11 @@ done:
     switch (rc) {
 
         case NGX_OK:
+
             break;
 
         case NGX_ABORT:
 
-            ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "invalid structure");
             return NGX_ERROR;
 
         case NGX_ERROR:
@@ -747,8 +799,35 @@ done:
 }
 
 
+static u_char *
+ngx_strchrr(ngx_str_t *s)
+{
+    u_char  *c;
+    for (c = s->data + s->len - 1; c > s->data && *c != '.'; c--);
+    return *c == '.' ? c : s->data + s->len;
+}
+
+
+ngx_int_t
+ngx_template_tag(ngx_conf_t *cf, ngx_str_t keyfile, ngx_str_t *tag)
+{
+    u_char  *c;
+    tag->data = ngx_pcalloc(cf->pool, keyfile.len + 1);
+    if (tag->data == NULL) {
+        ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "no memory");
+        return NGX_ERROR;
+    }
+    tag->len = keyfile.len;
+    ngx_memcpy(tag->data, keyfile.data, keyfile.len);
+    c = ngx_strchrr(tag);
+    *c = 0;
+    tag->len = c - tag->data;
+    return NGX_OK;
+}
+
+
 static char *
-ngx_template_conf(ngx_conf_t *cf, ngx_template_t *t, const char *tag)
+ngx_template_conf(ngx_conf_t *cf, ngx_template_t *t)
 {
     ngx_str_t  *value;
 
@@ -757,8 +836,10 @@ ngx_template_conf(ngx_conf_t *cf, ngx_template_t *t, const char *tag)
     t->filename = value[1];
     t->keyfile = value[2];
 
-    if (ngx_template_conf_apply(cf, t, tag) == NGX_OK)
-        return NGX_CONF_OK;
+    if (ngx_template_tag(cf, t->keyfile, &t->tag) == NGX_OK) {
+        if (ngx_template_conf_apply(cf, t) == NGX_OK)
+            return NGX_CONF_OK;
+    }
 
     return NGX_CONF_ERROR;
 }
@@ -785,7 +866,7 @@ ngx_template_directive(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     ngx_memzero(t, sizeof(ngx_template_t));
 
-    rv = ngx_template_conf(cf, t, "template");
+    rv = ngx_template_conf(cf, t);
     if (rv == NGX_CONF_ERROR)
         tmcf->templates.nelts--;
 
@@ -794,7 +875,7 @@ ngx_template_directive(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
 
 static void
-ngx_template_check_template(ngx_template_t *old, const char *tag)
+ngx_template_check_template(ngx_template_t *old)
 {
     ngx_pool_t           *pool;
     ngx_file_t            file;
@@ -850,7 +931,9 @@ ngx_template_check_template(ngx_template_t *old, const char *tag)
                       ngx_fd_info_n " \"%V\" failed", &t.keyfile);
         goto done;
     }
-    
+
+    ngx_template_tag(&cf, t.keyfile, &t.tag);
+
     if (ngx_template_read_template(&cf, t.filename, &t.template, &t.updated)
             != NGX_OK)
         goto done;
@@ -858,7 +941,7 @@ ngx_template_check_template(ngx_template_t *old, const char *tag)
     if (ngx_max(file.info.st_mtim.tv_sec, t.updated) == old->updated)
         goto done;
     
-    if (ngx_template_conf_parse_yaml(pool, fdopen(file.fd, "r"), &t, tag, NULL)
+    if (ngx_template_conf_parse_yaml(pool, fdopen(file.fd, "r"), &t, NULL)
             != NGX_OK)
         goto done;
 
@@ -893,19 +976,111 @@ done:
 
 
 static void
-ngx_template_check(ngx_array_t a, const char *tag)
+ngx_template_check(ngx_array_t a)
 {
     ngx_template_t  *t;
     ngx_uint_t       j;
 
     t = a.elts;
     for (j = 0; j < a.nelts; j++)
-        ngx_template_check_template(t + j, tag);
+        ngx_template_check_template(t + j);
 }
 
 
 void
 ngx_template_check_updates(ngx_template_main_conf_t *tmcf)
 {
-    ngx_template_check(tmcf->templates, "template");
+    ngx_template_check(tmcf->templates);
+}
+
+
+typedef struct {
+    ngx_str_t  tag;
+    ngx_str_t  name;
+    ngx_str_t  key;
+} lookup_key_t;
+
+
+static lookup_key_t
+split(ngx_str_t key)
+{
+    lookup_key_t  lk;
+    u_char       *c = key.data;
+
+    // tag
+
+    lk.tag.data = key.data;
+    while (c < key.data + key.len && *c != '.')
+        c++;
+    lk.tag.len = c - lk.tag.data;
+
+    if (c == key.data + key.len)
+        return lk;
+
+    // name
+
+    lk.name.data = ++c;
+    while (c < key.data + key.len && *c != '.')
+        c++;
+    lk.name.len = c - lk.name.data;
+
+    if (c == key.data + key.len) {
+        lk.key = lk.name;
+        return lk;
+    }
+ 
+    // key
+
+    lk.key.data = ++c;
+    lk.key.len = key.data + key.len - lk.key.data;
+
+    return lk;
+}
+
+
+ngx_int_t
+lookup(ngx_array_t *templates, ngx_str_t key, ngx_str_t *retval)
+{
+    ngx_template_main_conf_t  *tmcf;
+    ngx_template_t            *t;
+    ngx_template_conf_t       *conf;
+    ngx_uint_t                 j, i;
+    lookup_key_t               lk = split(key);
+    
+    if (lk.key.data == NULL)
+        return NGX_DECLINED;
+
+    if (templates == NULL) {
+        tmcf = (ngx_template_main_conf_t *) ngx_get_conf(ngx_cycle->conf_ctx,
+                                                         ngx_template_module);
+        templates = &tmcf->templates;
+    }
+
+    for (j = 0; j < templates->nelts; j++) {
+
+        t = (ngx_template_t *)
+                ((u_char *) templates->elts + j * templates->size);
+
+        if (ngx_memn2cmp(lk.tag.data, t->tag.data,
+                         lk.tag.len, t->tag.len) == 0) {
+
+            for (i = 0; i < t->entries.nelts; i++) {
+
+            conf = (ngx_template_conf_t *)
+                    ((u_char *) t->entries.elts + i * t->entries.size);
+
+                if (ngx_memn2cmp(lk.name.data, conf->name.data,
+                                 lk.name.len, conf->name.len) == 0) {
+
+                    *retval = lookup_key(NULL, conf, lk.key);
+                    if (retval->data != NULL)
+                        return NGX_OK;
+
+                    break;
+                }
+            }
+        }
+    }
+
+    return NGX_DECLINED;
 }

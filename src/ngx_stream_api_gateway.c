@@ -22,18 +22,22 @@ static ngx_stream_module_t ngx_stream_api_gateway_ctx = {
 };
 
 
+#define NGX_ALL_CONF (NGX_STREAM_MAIN_CONF |  \
+                      NGX_STREAM_SRV_CONF  |  \
+                      NGX_STREAM_UPS_CONF)
+
 static ngx_command_t  ngx_stream_api_gateway_commands[] = {
 
-    { ngx_string("api_gateway_entrypoints"),
-      NGX_STREAM_MAIN_CONF|NGX_CONF_TAKE2|NGX_CONF_TAKE3,
-      ngx_api_gateway_entrypoints,
-      NGX_STREAM_MAIN_CONF_OFFSET,
+    { ngx_string("template"),
+      NGX_ALL_CONF|NGX_CONF_TAKE2,
+      ngx_template_directive,
+      0,
       0,
       NULL },
 
-    { ngx_string("api_gateway_backends"),
+    { ngx_string("api_gateway_template"),
       NGX_STREAM_MAIN_CONF|NGX_CONF_TAKE2|NGX_CONF_TAKE3,
-      ngx_api_gateway_backends,
+      ngx_api_gateway_template_directive,
       NGX_STREAM_MAIN_CONF_OFFSET,
       0,
       NULL },
@@ -53,6 +57,7 @@ static ngx_command_t  ngx_stream_api_gateway_commands[] = {
       NULL },
 
       ngx_null_command
+
 };
 
 
