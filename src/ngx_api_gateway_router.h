@@ -23,13 +23,20 @@ typedef struct {
 
 typedef struct {
     ngx_array_t   regex;
-    ngx_trie_t    tree;
+    ngx_trie_t   *trie;
 } ngx_http_api_gateway_mapping_t;
 
 typedef struct {
-    ngx_array_t                     backends;
-    ngx_str_t                       var;
-    ngx_http_api_gateway_mapping_t  map;
+    ngx_http_api_gateway_mapping_t   map;
+    ngx_slab_pool_t                 *slab;
+} ngx_http_api_gateway_shctx_t;
+
+typedef struct {
+    ngx_array_t                      backends;
+    ngx_str_t                        var;
+    ngx_http_api_gateway_mapping_t   map;
+    ngx_shm_zone_t                  *zone;
+    ngx_http_api_gateway_shctx_t    *sh;
 } ngx_http_api_gateway_conf_t;
 
 typedef struct {
@@ -47,7 +54,7 @@ char * ngx_api_gateway_router(ngx_conf_t *cf, ngx_command_t *cmd,
 ngx_int_t
 ngx_api_gateway_router_build(ngx_pool_t *pool,
     ngx_http_api_gateway_mapping_t *m, ngx_str_t backend,
-    ngx_template_list_t entries);
+    ngx_template_seq_t entries);
 
 
 ngx_int_t

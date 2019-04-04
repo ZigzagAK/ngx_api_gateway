@@ -34,7 +34,7 @@ ngx_api_gateway_create_main_conf(ngx_conf_t *cf)
     if (amcf == NULL)
         return NULL;
 
-    if (ngx_array_init(&amcf->templates, cf->pool, 10,
+    if (ngx_array_init(&amcf->base.templates, cf->pool, 10,
                        sizeof(ngx_api_gateway_t)) == NGX_ERROR)
         return NULL;
 
@@ -60,126 +60,11 @@ static ngx_str_t  KEYS_seq[] = {
 
     ngx_string("api"),
     ngx_string("backends"),
-    ngx_string("server.directives"),
-    ngx_string("server.locations"),
-    ngx_string("location.directives"),
-    ngx_string("servers")
+    ngx_string("directives"),
+    ngx_string("locations")
 
 };
 static ngx_int_t KEYS_seqn = sizeof(KEYS_seq) / sizeof(KEYS_seq[0]);
-
-
-static ngx_int_t
-ngx_api_gateway_parse_seq(ngx_pool_t *pool, yaml_parser_t *parser,
-    ngx_api_gateway_conf_t *conf, ngx_str_t path, ngx_str_t *retval)
-{
-    ngx_array_t           entries;
-    ngx_str_t            *entry;
-    yaml_event_t          event;
-    yaml_event_type_t     type;
-    size_t                size = 0;
-    ngx_uint_t            j;
-    u_char               *c;
-    ngx_template_list_t  *list_entry;
-    
-    if (ngx_array_init(&entries, pool, 10, sizeof(ngx_str_t)) != NGX_OK)
-        goto nomem;
-
-    if (!yaml_parser_parse(parser, &event))
-        return NGX_ERROR;
-
-    type = event.type;
-    yaml_event_delete(&event);
-
-    if (type != YAML_SEQUENCE_START_EVENT)
-        return NGX_ABORT;
-
-    do {
-        if (!yaml_parser_parse(parser, &event))
-            return NGX_ERROR;
-
-        type = event.type;
-        
-        switch (type) {
-            
-            case YAML_SCALAR_EVENT:
-
-                entry = ngx_array_push(&entries);
-                if (entry == NULL)
-                    goto nomem_local;
-
-                *entry = ngx_strdup(pool, event.data.scalar.value,
-                                  event.data.scalar.length);
-                if (entry->data == NULL)
-                    goto nomem_local;
-
-                size += entry->len + 1;
-                
-                break;
-
-            case YAML_SEQUENCE_END_EVENT:
-
-                break;
-
-            default:
-
-                yaml_event_delete(&event);
-                return NGX_ABORT;
-        }
-
-        yaml_event_delete(&event);
-        continue;
-
-nomem_local:
-
-        yaml_event_delete(&event);
-        goto nomem;
-
-    } while (type != YAML_SEQUENCE_END_EVENT);
-
-    if (conf->lists.elts == NULL) {
-        if (ngx_array_init(&conf->lists, pool, 10,
-                sizeof(ngx_template_list_t)) != NGX_OK)
-            goto nomem;
-    }
-
-    list_entry = ngx_array_push(&conf->lists);
-    if (list_entry == NULL)
-        goto nomem;
-
-    list_entry->key = path;
-    list_entry->elts = entries.elts;
-    list_entry->nelts = entries.nelts;
-
-    if (retval != NULL) {
-
-        if (size == 0) {
-            retval->data = ngx_pcalloc(pool, 1);
-            if (retval->data == NULL)
-                goto nomem;
-            retval->len = 0;
-            return NGX_OK;
-        }
-
-        retval->len = size - 1;
-        retval->data = ngx_palloc(pool, size);
-        if (retval->data == NULL)
-            goto nomem;
-
-        c = retval->data;
-
-        for (j = 0; j < list_entry->nelts; j++)
-            c = ngx_sprintf(c, "%V ", &list_entry->elts[j]);
-        retval->data[retval->len] = 0;
-    }
-
-    return NGX_OK;
-
-nomem:
-
-    ngx_log_error(NGX_LOG_ERR, pool->log, 0, "no memory");
-    return NGX_ERROR;
-}
 
 
 static ngx_int_t
@@ -190,174 +75,11 @@ ngx_api_gateway_handle_key(ngx_str_t path, yaml_char_t *key, size_t key_len,
     ngx_int_t  j;
 
     for (j = 0; j < KEYS_seqn; j++)
-        if (ngx_memn2cmp(KEYS_seq[j].data, path.data,
-                         KEYS_seq[j].len, path.len) == 0
-            || ngx_memn2cmp(KEYS_seq[j].data, key,
+        if (ngx_memn2cmp(KEYS_seq[j].data, key,
                          KEYS_seq[j].len, key_len) == 0)
-            return ngx_api_gateway_parse_seq(pool, parser,
-                    (ngx_api_gateway_conf_t *) conf, path, retval);
+            return NGX_OK;
 
-    return NGX_DONE;
-}
-
-
-static ngx_int_t
-ngx_api_gateway_template_apply(ngx_conf_t *cf, ngx_api_gateway_t *t)
-{
-    ngx_api_gateway_conf_t  *conf;
-    FILE                    *f;
-    ngx_int_t                rc = NGX_OK;
-    ngx_uint_t               i, j, n;
-    char                    *rv;
-    ngx_conf_file_t          conf_file;
-    ngx_conf_file_t         *prev = cf->conf_file;
-    ngx_str_t                keyfile = t->base.keyfile;
-    ngx_template_list_t     *entries;
-    volatile ngx_cycle_t    *pc;
-
-    ngx_log_error(NGX_LOG_NOTICE, cf->log, 0, "%V:%V", &t->base.filename,
-                  &keyfile);
-
-    if (ngx_template_read_template(cf, t->base.filename,
-            &t->base.template, NULL) != NGX_OK)
-        return NGX_ERROR;
-
-    if (ngx_conf_full_name(cf->cycle, &keyfile, 1) != NGX_OK)
-        return NGX_ERROR;
-
-    f = fopen((const char *) keyfile.data, "r");
-    if (f == NULL) {
-        ngx_conf_log_error(NGX_LOG_WARN, cf, errno, "can't open file: %V",
-                           &t->base.filename);
-        return NGX_ERROR;
-    }
-
-    if (ngx_array_init(&t->base.entries, cf->pool, 10,
-            sizeof(ngx_api_gateway_conf_t)) == NGX_ERROR) {
-        rc = NGX_ERROR;
-        goto done;
-    }
-
-    pc = ngx_cycle;
-    ngx_cycle = cf->cycle;
-
-    rc = ngx_template_conf_parse_yaml(cf->pool, f, &t->base,
-        ngx_api_gateway_handle_key);
-
-    ngx_cycle = pc;
-
-    if (rc != NGX_OK)
-        goto done;
-
-    t->base.yaml.len = ftell(f);
-    t->base.yaml.data = ngx_palloc(cf->pool, t->base.yaml.len);
-    if (t->base.yaml.data == NULL) {
-        rc = NGX_ERROR;
-        goto done;
-    }
-
-    fseek(f, 0, SEEK_SET);
-    fread(t->base.yaml.data, t->base.yaml.len, 1, f);
-
-    conf = t->base.entries.elts;
-
-    for (j = 0; j < t->base.entries.nelts; j++) {
-
-        ngx_log_error(NGX_LOG_NOTICE, cf->log, 0, "  keys");
-        for (i = 0; i < conf[j].base.nkeys; i++)
-            ngx_log_error(NGX_LOG_NOTICE, cf->log, 0, "    %V:%V",
-                &conf[j].base.keys[i].key, &conf[j].base.keys[i].value);
-
-        entries = conf[j].lists.elts;
-        
-        for (n = 0; n < conf[j].lists.nelts; n++) {
-
-            ngx_log_error(NGX_LOG_NOTICE, cf->log, 0, "  %V", &entries[n].key);
-
-            for (i = 0; i < entries[n].nelts; i++)
-                ngx_log_error(NGX_LOG_NOTICE, cf->log, 0, "    %V",
-                              &entries[n].elts[i]);
-        }
-
-        ngx_log_error(NGX_LOG_NOTICE, cf->log, 0,
-                "  template\n%V", &t->base.template);
-        ngx_log_error(NGX_LOG_NOTICE, cf->log, 0,
-                "  text\n%V", &conf[j].base.conf);
-
-        ngx_memzero(&conf_file, sizeof(ngx_conf_file_t));
-
-        cf->conf_file = &conf_file;
-
-        conf_file.buffer = ngx_create_temp_buf(cf->temp_pool,
-            conf[j].base.conf.len + 1);
-        conf_file.file.log = cf->log;
-        if (conf_file.buffer == NULL) {
-            rc = NGX_ERROR;
-            goto done;
-        }
-        conf_file.file.log = cf->log;
-        conf_file.file.name.data = ngx_pcalloc(cf->temp_pool,
-            conf[j].base.name.len + t->base.tag.len + 2);
-        if (conf_file.file.name.data == NULL) {
-            rc = NGX_ERROR;
-            goto done;
-        }
-        conf_file.file.name.len = ngx_sprintf(conf_file.file.name.data, "%V:%V",
-            &t->base.tag, &conf[j].base.name) - conf_file.file.name.data;
-        conf_file.line = 1;
-        conf_file.file.info.st_size = conf[j].base.conf.len + 1;
-        conf_file.file.offset = conf_file.file.info.st_size;
-        conf_file.buffer->last = ngx_cpymem(conf_file.buffer->start,
-                conf[j].base.conf.data, conf[j].base.conf.len);
-
-        if (ngx_dump_config
-#if (NGX_DEBUG)
-            || 1
-#endif
-           )
-        {
-            if (ngx_conf_add_dump(cf, &conf_file.file.name) != NGX_OK) {
-                rc = NGX_ERROR;
-                goto done;
-            }
-
-            if (conf_file.dump != NULL)
-                conf_file.dump->last = ngx_cpymem(conf_file.dump->last,
-                    conf[j].base.conf.data, conf[j].base.conf.len);
-        }
-
-        *conf_file.buffer->last++ = '}';
-
-        rv = ngx_conf_parse(cf, NULL);
-
-        if (rv != NGX_CONF_OK)
-            rc = NGX_ABORT;
-    }
-
-    
-done:
-
-    cf->conf_file = prev;
-
-    fclose(f);
-
-    switch (rc) {
-
-        case NGX_OK:
-            break;
-
-        case NGX_ABORT:
-
-            ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "invalid structure");
-            return NGX_ERROR;
-
-        default:
-
-            ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "no memory");
-            return NGX_ERROR;
-    }
-
-    return NGX_OK;
+    return NGX_DECLINED;
 }
 
 
@@ -388,7 +110,8 @@ ngx_api_gateway_template(ngx_conf_t *cf, ngx_api_gateway_t *t)
         }
     }
 
-    if (ngx_api_gateway_template_apply(cf, t) == NGX_OK) 
+    if (ngx_template_conf_apply(cf, &t->base, ngx_api_gateway_handle_key)
+            == NGX_OK) 
         return NGX_CONF_OK;
 
     return NGX_CONF_ERROR;
@@ -400,7 +123,7 @@ ngx_api_gateway_template_directive(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf)
 {
     ngx_api_gateway_main_conf_t  *amcf = conf;
-    ngx_api_gateway_t            *t = ngx_array_push(&amcf->templates);
+    ngx_api_gateway_t            *t = ngx_array_push(&amcf->base.templates);
     char                         *rv;
 
     if (t == NULL) {
@@ -412,7 +135,7 @@ ngx_api_gateway_template_directive(ngx_conf_t *cf, ngx_command_t *cmd,
 
     rv = ngx_api_gateway_template(cf, t);
     if (rv == NGX_CONF_ERROR)
-        amcf->templates.nelts--;
+        amcf->base.templates.nelts--;
 
     return rv;
 }
@@ -432,27 +155,28 @@ ngx_api_gateway_fetch_handler(ngx_int_t rc,
     context_t          *ctx = pctx;
     ngx_str_t           keyfile = ctx->t->base.keyfile;
     FILE               *f;
+    ngx_file_t          file;
     ngx_api_gateway_t   t;
     ngx_tm_t            tm;
-    u_char              backup[keyfile.len + 64];
+    u_char             *backup;
 
     if (rc == NGX_ERROR) {
 
         ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
-                     "ngx_api_gateway: [%V], failed to upsync",
-                     &ctx->t->url.url);
+                      "ngx_api_gateway upsync failed, url=%V",
+                      &ctx->t->url.url);
         goto done;
     } else if (rc == NGX_DECLINED) {
 
         ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
-                     "ngx_api_gateway: [%V], upsync timeout",
-                     &ctx->t->url.url);
+                      "ngx_api_gateway upsync timeout, url=%V",
+                      &ctx->t->url.url);
         goto done;
     } else if (rc != NGX_HTTP_OK && rc != NGX_HTTP_NO_CONTENT) {
 
         ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, 0,
-                     "ngx_api_gateway: [%V], upsync status=%d "
-                     "(not 200, 204)", &ctx->t->url.url, rc);
+                      "ngx_api_gateway upsync status=%d "
+                      "(not 200, 204), url=%V", rc, &ctx->t->url.url);
         goto done;
     }
 
@@ -483,30 +207,39 @@ ngx_api_gateway_fetch_handler(ngx_int_t rc,
         goto done;
 
     ngx_localtime(ngx_cached_time->sec, &tm);
-    ngx_sprintf(backup, "%V.%4d%02d%02d%02d%02d%02d", &keyfile,
+
+    backup = ngx_pcalloc(ctx->pool, keyfile.len + 64);
+    if (backup == NULL)
+        goto done;
+
+    ngx_sprintf(backup, "%V.%4d%02d%02d%02d%02d%02d\0", &keyfile,
         tm.tm_year, tm.tm_mon, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
 
-    if (ngx_rename_file(keyfile.data, backup) != 0) {
+    if (ngx_rename_file(keyfile.data, backup) == NGX_FILE_ERROR) {
         ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, errno,
-                      "ngx_api_gateway: can't backup %V", &keyfile);
+                      ngx_rename_file_n " backup \"%V\" failed", &keyfile);
+        goto done;
+    }
+    
+    file.name = keyfile;
+    file.log = ngx_cycle->log;
+
+    file.fd = ngx_open_file(keyfile.data, NGX_FILE_WRONLY, NGX_FILE_TRUNCATE,
+                            NGX_FILE_DEFAULT_ACCESS);
+
+    if (file.fd == NGX_INVALID_FILE) {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, ngx_errno,
+                      ngx_open_file_n " \"%V\" failed", &keyfile);
         goto done;
     }
 
-    f = fopen((const char *) keyfile.data, "w+");
-    if (f == NULL) {
-        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
-                     "ngx_api_gateway: can't open %V", &keyfile);
-        goto done;
-    }
+    if (ngx_write_file(&file, body->data, body->len, 0) != NGX_ERROR)
+        ngx_signal_process((ngx_cycle_t *) ngx_cycle, "reload");
 
-    fwrite(body->data, body->len, 1, f);
-
-    fclose(f);
-
-    ngx_signal_process((ngx_cycle_t *) ngx_cycle, "reload");
+    ngx_close_file(file.fd);
 
 done:
-
+    
     ngx_destroy_pool(ctx->pool);
 }
 
@@ -556,5 +289,5 @@ ngx_api_gateway_fetch(ngx_array_t a, ngx_msec_t timeout)
 void
 ngx_api_gateway_fetch_keys(ngx_api_gateway_main_conf_t *amcf)
 {
-    ngx_api_gateway_fetch(amcf->templates, amcf->timeout);
+    ngx_api_gateway_fetch(amcf->base.templates, amcf->timeout);
 }

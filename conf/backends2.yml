@@ -7,6 +7,7 @@ backends2:
       - ~ ^/app3/fun2
       - /app3/fun3
       - /app3/*/hello/*
+      - /app3/0000000
     dns:
       update: 60s
     server:
@@ -21,5 +22,4 @@ backends2:
         match: pong
     servers:
       - server 127.0.0.1:3333 max_conns={{server.max_conns}} max_fails={{server.max_fails}} fail_timeout={{server.fail_timeout}};\n
-      - server 127.0.0.1:4444 max_conns={{server.max_conns}} max_fails={{server.max_fails}} fail_timeout={{server.fail_timeout}};\n
-      - server mail.ru;
+      - server 127.0.0.1:4444 max_conns={{server.max_conns}} max_fails={{server.max_fails}} fail_timeout={{server.fail_timeout}};

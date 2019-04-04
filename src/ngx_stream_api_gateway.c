@@ -106,7 +106,7 @@ ngx_stream_api_gateway_init_worker(ngx_cycle_t *cycle)
     amcf = ngx_stream_cycle_get_module_main_conf(cycle,
             ngx_stream_api_gateway_module);
 
-    if (amcf == NULL || amcf->templates.nelts == 0)
+    if (amcf == NULL || amcf->base.templates.nelts == 0)
         return NGX_OK;
     
     ev = ngx_pcalloc(cycle->pool, sizeof(ngx_event_t));

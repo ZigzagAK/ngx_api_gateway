@@ -49,7 +49,7 @@ static ngx_http_module_t ngx_http_api_gateway_ctx = {
 
 
 static char *
-ngx_api_gateway_router_add_variable(ngx_conf_t *cf, void *post, void *data);
+ngx_api_gateway_router_add_variable(ngx_conf_t *cf, void *data, void *conf);
 static ngx_conf_post_t  ngx_api_gateway_router_post = {
     ngx_api_gateway_router_add_variable
 };
@@ -184,40 +184,14 @@ ngx_api_gateway_create_loc_conf(ngx_conf_t *cf)
 }
 
 
-static ngx_api_gateway_conf_t *
-ngx_api_gateway_create_lookup_backend(ngx_api_gateway_main_conf_t *gmcf,
-    ngx_str_t name)
-{
-    ngx_uint_t               j, i;
-    ngx_api_gateway_t       *t;
-    ngx_api_gateway_conf_t  *conf;
-
-    t = gmcf->templates.elts;
-
-    for (j = 0; j < gmcf->templates.nelts; j++) {
-
-        conf = t[j].base.entries.elts;
-
-        for (i = 0; i < t[j].base.entries.nelts; i++) {
-
-            if (ngx_memn2cmp(conf[i].base.name.data, name.data,
-                             conf[i].base.name.len, name.len) == 0)
-                return conf + i;
-        }
-    }
-
-    return NULL;
-}
-
-
 static ngx_int_t
 ngx_api_gateway_create_mappings(ngx_conf_t *cf,
     ngx_http_api_gateway_loc_conf_t *glcf)
 {
     ngx_api_gateway_main_conf_t  *gmcf;
     ngx_http_api_gateway_conf_t  *gateway_conf;
-    ngx_api_gateway_conf_t       *conf;
-    ngx_template_list_t          *list;
+    ngx_template_conf_t          *conf;
+    ngx_template_seq_t           *seq;
     ngx_uint_t                    k, j, i;
     ngx_str_t                    *backend;
 
@@ -233,20 +207,25 @@ ngx_api_gateway_create_mappings(ngx_conf_t *cf,
 
         for (j = 0; j < gateway_conf[k].backends.nelts; j++) {
 
-            conf = ngx_api_gateway_create_lookup_backend(gmcf, backend[j]);
+            conf = ngx_template_lookup_by_name(&gmcf->base, backend[j]);
             if (conf == NULL)
                 continue;
 
-            list = conf->lists.elts;
+            seq = conf->seqs.elts;
 
-            for (i = 0; i < conf->lists.nelts; i++) {
+            for (i = 0; i < conf->seqs.nelts; i++) {
 
-                if (ngx_memn2cmp(list[i].key.data, api.data,
-                                 list[i].key.len, api.len) != 0)
+                if (ngx_memn2cmp(seq[i].key.data, api.data,
+                                 seq[i].key.len, api.len) != 0)
                     continue;
 
+                if (gateway_conf->zone == NULL) {
+                    if (ngx_trie_init(gateway_conf[k].map.trie) == NGX_ERROR)
+                        return NGX_ERROR;
+                }
+
                 if (ngx_api_gateway_router_build(cf->pool, &gateway_conf[k].map,
-                        conf->base.name, list[i]) == NGX_ERROR)
+                        conf->name, seq[i]) == NGX_ERROR)
                     return NGX_ERROR;
             }
         }
@@ -276,7 +255,7 @@ ngx_api_gateway_merge_loc_conf(ngx_conf_t *cf,
             return NGX_CONF_ERROR;
         *c = gateway_conf[j];
     }
-
+    
     if (ngx_api_gateway_create_mappings(cf, child) == NGX_OK)
         return NGX_CONF_OK;
 
@@ -313,7 +292,7 @@ ngx_http_api_gateway_init_worker(ngx_cycle_t *cycle)
     amcf = ngx_http_cycle_get_module_main_conf(cycle,
             ngx_http_api_gateway_module);
 
-    if (amcf == NULL || amcf->templates.nelts == 0)
+    if (amcf == NULL || amcf->base.templates.nelts == 0)
         return NGX_OK;
     
     ev = ngx_pcalloc(cycle->pool, sizeof(ngx_event_t));
@@ -370,38 +349,179 @@ ngx_api_gateway_router_map(ngx_http_request_t *r,
 }
 
 
+typedef struct {
+    ngx_http_api_gateway_loc_conf_t  *alcf;
+    ngx_http_api_gateway_conf_t      *gateway_conf;
+} router_var_ctx_t;
+
+
 static ngx_int_t
 ngx_api_gateway_router_var(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data)
 {
-    ngx_http_api_gateway_conf_t  *gateway_conf;
+    ngx_http_api_gateway_loc_conf_t  *alcf;
+    router_var_ctx_t                 *ctx;
+    ngx_array_t                      *a;
+    ngx_uint_t                        j;
 
-    gateway_conf = (ngx_http_api_gateway_conf_t *) data;
+    alcf = ngx_http_get_module_loc_conf(r, ngx_http_api_gateway_module);
 
-    v->valid = 1;
-    v->not_found = 0;
+    a = (ngx_array_t *) data;
+    ctx = a->elts;
 
-    if (ngx_api_gateway_router_map(r, gateway_conf, v) == NGX_OK)
-        return NGX_OK;
+    for (j = 0; j < a->nelts; j++) {
+
+        if (ctx[j].alcf == alcf) {
+    
+            v->valid = 1;
+            v->not_found = 0;
+
+            if (ngx_api_gateway_router_map(r, ctx[j].gateway_conf, v) == NGX_OK)
+                return NGX_OK;
+        }
+    }
 
     v->not_found = 1;
     return NGX_OK;
 }
 
 
-static char *
-ngx_api_gateway_router_add_variable(ngx_conf_t *cf, void *post, void *data)
+static ngx_keyval_t
+split_var(ngx_str_t var)
 {
-    ngx_http_api_gateway_conf_t  *gateway_conf = data;
-    ngx_http_variable_t          *var;
+    ngx_keyval_t   kv = { var, ngx_null_string };
+    u_char        *size;
 
-    var = ngx_http_add_variable(cf, &gateway_conf->var,
+    size = ngx_strlchr(var.data, var.data + var.len, ':');
+    if (size == NULL)
+        return kv;
+
+    *size = 0;
+
+    kv.key.len = size - kv.key.data;
+    kv.value.data = ++size;
+    kv.value.len = var.data + var.len - kv.value.data;
+
+    return kv;
+}
+
+
+static ngx_int_t
+ngx_api_gateway_router_init_shtrie(ngx_shm_zone_t *zone, void *old);
+
+
+static char *
+ngx_api_gateway_router_add_variable(ngx_conf_t *cf, void *data, void *conf)
+{
+    ngx_http_api_gateway_loc_conf_t  *alcf = conf;
+    ngx_http_api_gateway_conf_t      *gateway_conf = data;
+    ngx_http_variable_t              *var;
+    ngx_keyval_t                      kv;
+    ssize_t                           shmsize;
+    ngx_array_t                      *a;
+    router_var_ctx_t                 *ctx;
+
+    kv = split_var(gateway_conf->var);
+
+    var = ngx_http_add_variable(cf, &kv.key,
                                 NGX_HTTP_VAR_CHANGEABLE);
     if (var == NULL)
         return NGX_CONF_ERROR;
 
     var->get_handler = ngx_api_gateway_router_var;
-    var->data = (uintptr_t) gateway_conf;
+
+    if (var->data == 0) {
+
+        a = ngx_array_create(cf->pool, 10, sizeof(router_var_ctx_t));
+        if (a == NULL)
+            return NGX_CONF_ERROR;
+
+        var->data = (uintptr_t) a;
+    } else
+        a = (ngx_array_t *) var->data;
+
+    ctx = ngx_array_push(a);
+    if (ctx == NULL)
+        return NGX_CONF_ERROR; 
+
+    ctx->alcf = alcf;
+    ctx->gateway_conf = gateway_conf;
+
+    if (kv.value.data == NULL)
+        return NGX_CONF_OK;
+
+    shmsize = ngx_parse_size(&kv.value);
+    if (shmsize == NGX_ERROR)
+        return NGX_CONF_ERROR; 
+
+    gateway_conf->zone = ngx_shared_memory_add(cf, &kv.key, shmsize,
+        &ngx_http_api_gateway_module);
+
+    if (gateway_conf->zone == NULL)
+        return NGX_CONF_ERROR;
+
+    gateway_conf->zone->data = gateway_conf;
+    gateway_conf->zone->init = ngx_api_gateway_router_init_shtrie;
 
     return NGX_CONF_OK;
+}
+
+
+static ngx_int_t
+ngx_api_gateway_router_init_shtrie(ngx_shm_zone_t *zone, void *old)
+{
+    ngx_http_api_gateway_conf_t   *ctx, *octx;
+    ngx_http_api_gateway_shctx_t  *sh;
+    ngx_slab_pool_t               *slab;
+    ngx_trie_t                    *prev = NULL, *trie;
+    uint32_t                       hash = 0;
+    
+    ctx = zone->data;
+
+    slab = (ngx_slab_pool_t *) zone->shm.addr;
+
+    if (old != NULL) {
+        
+        octx = old;
+        sh = slab->data;
+
+        hash = ngx_trie_hash(ctx->map.trie);
+
+        if (octx->map.trie->hash == hash) {
+
+            ctx->sh = sh;
+            ctx->map = sh->map;
+
+            return NGX_OK;
+        }
+
+        prev = sh->map.trie;
+
+    } else {
+
+        sh = ngx_slab_calloc(slab, sizeof(ngx_http_api_gateway_shctx_t));
+        if (sh == NULL)
+            return NGX_ERROR;
+
+        sh->slab = slab;
+        slab->data = sh;
+
+        hash = ngx_trie_hash(ctx->map.trie);
+    }
+
+    trie = ngx_trie_shm_init(ctx->map.trie, slab);
+    if (trie == NULL)
+        return NGX_ERROR;
+
+    if (prev != NULL) {
+        // replace incapsulated data and free old
+        ngx_trie_free(ngx_trie_swap(prev, trie));
+    } else
+        sh->map.trie = trie;
+
+    ctx->sh = sh;
+    ctx->map = sh->map;
+    sh->map.trie->hash = hash;
+
+    return NGX_OK;
 }

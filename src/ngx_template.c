@@ -115,10 +115,11 @@ ngx_strdup(ngx_pool_t *pool, u_char *s, size_t len)
 {
     ngx_str_t  dst;
 
-    dst.data = ngx_pcalloc(pool, len + 1);
+    dst.data = ngx_palloc(pool, len + 1);
     if (dst.data)
         ngx_memcpy(dst.data, s, len);
     dst.len = len;
+    dst.data[dst.len] = 0;
 
     return dst;
 }
@@ -212,7 +213,7 @@ unescape(ngx_str_t *s)
 }
 
 
-ngx_str_t
+static ngx_str_t
 transform(ngx_pool_t *pool, ngx_template_conf_t *conf,
     ngx_str_t template)
 {
@@ -297,7 +298,7 @@ transform(ngx_pool_t *pool, ngx_template_conf_t *conf,
         c1 = ngx_cpymem(c1, out->buf->start, out->buf->last - out->buf->start);
 
     if (undefined != 0) {
-        ngx_str_null(&s);
+        ngx_str_set(&s, "");
     }
 
     return s;
@@ -306,6 +307,139 @@ nomem:
 
     ngx_str_null(&s);
     return s;
+}
+
+
+static ngx_str_t  KEYS_seq[] = {
+
+    ngx_string("map"),
+    ngx_string("servers")
+
+};
+static ngx_int_t KEYS_seqn = sizeof(KEYS_seq) / sizeof(KEYS_seq[0]);
+
+
+static ngx_int_t
+ngx_template_handle_key(yaml_char_t *key, size_t key_len)
+{
+    ngx_int_t  j;
+
+    for (j = 0; j < KEYS_seqn; j++)
+        if (ngx_memn2cmp(KEYS_seq[j].data, key,
+                         KEYS_seq[j].len, key_len) == 0)
+            return NGX_OK;
+
+    return NGX_DECLINED;
+}
+
+
+static ngx_int_t
+ngx_template_parse_seq(ngx_pool_t *pool, yaml_parser_t *parser,
+    ngx_template_conf_t *conf, ngx_str_t path, ngx_str_t *retval)
+{
+    ngx_array_t           entries;
+    ngx_str_t            *entry;
+    yaml_event_t          event;
+    yaml_event_type_t     type;
+    size_t                size = 0;
+    ngx_uint_t            j;
+    u_char               *c;
+    ngx_template_seq_t   *seq_entry;
+    
+    if (ngx_array_init(&entries, pool, 10, sizeof(ngx_str_t)) != NGX_OK)
+        goto nomem;
+
+    if (!yaml_parser_parse(parser, &event))
+        return NGX_ERROR;
+
+    type = event.type;
+    yaml_event_delete(&event);
+
+    if (type != YAML_SEQUENCE_START_EVENT)
+        return NGX_ABORT;
+
+    do {
+        if (!yaml_parser_parse(parser, &event))
+            return NGX_ERROR;
+
+        type = event.type;
+        
+        switch (type) {
+            
+            case YAML_SCALAR_EVENT:
+
+                entry = ngx_array_push(&entries);
+                if (entry == NULL)
+                    goto nomem_local;
+
+                *entry = ngx_strdup(pool, event.data.scalar.value,
+                                  event.data.scalar.length);
+                if (entry->data == NULL)
+                    goto nomem_local;
+
+                size += entry->len + 1;
+                
+                break;
+
+            case YAML_SEQUENCE_END_EVENT:
+
+                break;
+
+            default:
+
+                yaml_event_delete(&event);
+                return NGX_ABORT;
+        }
+
+        yaml_event_delete(&event);
+        continue;
+
+nomem_local:
+
+        yaml_event_delete(&event);
+        goto nomem;
+
+    } while (type != YAML_SEQUENCE_END_EVENT);
+
+    if (conf->seqs.elts == NULL) {
+        if (ngx_array_init(&conf->seqs, pool, 10,
+                sizeof(ngx_template_seq_t)) != NGX_OK)
+            goto nomem;
+    }
+
+    seq_entry = ngx_array_push(&conf->seqs);
+    if (seq_entry == NULL)
+        goto nomem;
+
+    seq_entry->key = path;
+    seq_entry->elts = entries.elts;
+    seq_entry->nelts = entries.nelts;
+
+    if (retval != NULL) {
+
+        if (size == 0) {
+            ngx_str_set(retval, "");
+            return NGX_DONE;
+        }
+
+        retval->len = size - 1;
+        retval->data = ngx_palloc(pool, size);
+        if (retval->data == NULL)
+            goto nomem;
+
+        c = retval->data;
+
+        for (j = 0; j < seq_entry->nelts; j++)
+            c = ngx_sprintf(c, "%V ", &seq_entry->elts[j]);
+        retval->data[retval->len] = 0;
+    }
+
+    return NGX_DONE;
+
+nomem:
+
+    ngx_log_error(NGX_LOG_ERR, pool->log, 0, "no memory");
+    return NGX_ERROR;
 }
 
 
@@ -347,16 +481,29 @@ ngx_template_parse_entry(ngx_pool_t *pool, yaml_parser_t *parser,
                         goto nomem_local;
 
                     key = concat_path(pool, path, level);
-                    
-                    if (pfkey) {
 
-                        ngx_str_null(&retval);
+                    rc = NGX_DECLINED;
 
+                    ngx_str_null(&retval);
+
+                    if (pfkey != NULL)
                         rc = (*pfkey)(key, event.data.scalar.value,
                                 event.data.scalar.length,
                                 pool, parser, conf, &retval);
 
-                        if (rc == NGX_OK) {
+                    if (rc == NGX_DECLINED)
+                        rc = ngx_template_handle_key(event.data.scalar.value,
+                            event.data.scalar.length);
+
+                    if (rc == NGX_OK || rc == NGX_DONE) {
+
+                        if (rc == NGX_OK)
+                            rc = ngx_template_parse_seq(pool, parser, conf,
+                                key, &retval);
+
+                        if (rc == NGX_DONE) {
+
+                            // parsed in callback
 
                             if (retval.data != NULL) {
 
@@ -373,6 +520,9 @@ ngx_template_parse_entry(ngx_pool_t *pool, yaml_parser_t *parser,
 
                             break;
                         }
+
+                        if (rc == NGX_OK)
+                            break;
 
                         if (rc == NGX_ERROR || rc == NGX_ABORT)
                             return rc;
@@ -419,7 +569,7 @@ ngx_template_parse_entry(ngx_pool_t *pool, yaml_parser_t *parser,
             case YAML_SEQUENCE_START_EVENT:
 
                 ngx_log_error(NGX_LOG_ERR, pool->log, 0,
-                        "yaml sequences are unsupported");
+                        "yaml sequences are unsupported, path=%V", &key);
 
             default:
 
@@ -577,6 +727,8 @@ ngx_template_conf_parse_yaml(ngx_pool_t *pool, FILE *f,
         conf->conf = transform(pool, conf, t->template);
         if (conf->conf.data == NULL)
             rc = NGX_ERROR;
+        if (conf->conf.len == 0)
+            rc = NGX_ABORT;
     }
 
 done:
@@ -647,17 +799,19 @@ ngx_conf_add_dump(ngx_conf_t *cf, ngx_str_t *filename)
 }
 
 
-static ngx_int_t
-ngx_template_conf_apply(ngx_conf_t *cf, ngx_template_t *t)
+ngx_int_t
+ngx_template_conf_apply(ngx_conf_t *cf, ngx_template_t *t, on_key_t pfkey)
 {
-    ngx_template_conf_t  *conf;
-    ngx_file_t            file;
-    ngx_int_t             rc = NGX_OK;
-    ngx_uint_t            i, j;
-    char                 *rv;
-    ngx_conf_file_t       conf_file;
-    ngx_conf_file_t      *prev = cf->conf_file;
-    ngx_str_t             keyfile = t->keyfile;
+    ngx_template_conf_t   *conf;
+    ngx_file_t             file;
+    ngx_int_t              rc = NGX_OK;
+    ngx_uint_t             i, j, n;
+    char                  *rv;
+    ngx_conf_file_t        conf_file;
+    ngx_conf_file_t       *prev = cf->conf_file;
+    ngx_str_t              keyfile = t->keyfile;
+    ngx_template_seq_t    *seqs;
+    volatile ngx_cycle_t  *pc;
     
     ngx_conf_log_error(NGX_LOG_NOTICE, cf, 0, "%V:%V", &t->filename, &keyfile);
 
@@ -686,8 +840,11 @@ ngx_template_conf_apply(ngx_conf_t *cf, ngx_template_t *t)
         goto done;
     }
 
+    pc = ngx_cycle;
+    ngx_cycle = cf->cycle;
     rc = ngx_template_conf_parse_yaml(cf->pool, fdopen(file.fd, "r"),
-        t, NULL);
+        t, pfkey);
+    ngx_cycle = pc;
     if (rc != NGX_OK)
         goto done;
 
@@ -705,44 +862,56 @@ ngx_template_conf_apply(ngx_conf_t *cf, ngx_template_t *t)
         goto done;
     }
 
-    conf = t->entries.elts;
-
     for (j = 0; j < t->entries.nelts; j++) {
 
+        conf = (ngx_template_conf_t *)
+                    ((u_char *) t->entries.elts + j * t->entries.size);
+
         ngx_log_error(NGX_LOG_NOTICE, cf->log, 0, "  keys");
-        for (i = 0; i < conf[j].nkeys; i++)
+        for (i = 0; i < conf->nkeys; i++)
             ngx_log_error(NGX_LOG_NOTICE, cf->log, 0, "    %V:%V",
-                          &conf[j].keys[i].key, &conf[j].keys[i].value);
+                          &conf->keys[i].key, &conf->keys[i].value);
+
+        seqs = conf->seqs.elts;
+        
+        for (n = 0; n < conf->seqs.nelts; n++) {
+
+            ngx_log_error(NGX_LOG_NOTICE, cf->log, 0, "  %V", &seqs[n].key);
+
+            for (i = 0; i < seqs[n].nelts; i++)
+                ngx_log_error(NGX_LOG_NOTICE, cf->log, 0, "    %V",
+                              &seqs[n].elts[i]);
+        }
 
         ngx_log_error(NGX_LOG_NOTICE, cf->log, 0,
                 "  template\n%V", &t->template);
         ngx_log_error(NGX_LOG_NOTICE, cf->log, 0,
-                "  text\n%V", &conf[j].conf);
+                "  text\n%V", &conf->conf);
 
         ngx_memzero(&conf_file, sizeof(ngx_conf_file_t));
 
         cf->conf_file = &conf_file;
 
         conf_file.buffer = ngx_create_temp_buf(cf->temp_pool,
-            conf[j].conf.len + 1);
+            conf->conf.len + 1);
         if (conf_file.buffer == NULL) {
             rc = NGX_ERROR;
             goto done;
         }
         conf_file.file.log = cf->log;
         conf_file.file.name.data = ngx_pcalloc(cf->temp_pool,
-            conf[j].name.len + t->tag.len + 2);
+            conf->name.len + t->tag.len + 2);
         if (conf_file.file.name.data == NULL) {
             rc = NGX_ERROR;
             goto done;
         }
         conf_file.file.name.len = ngx_sprintf(conf_file.file.name.data, "%V:%V",
-            &t->tag, &conf[j].name) - conf_file.file.name.data;
+            &t->tag, &conf->name) - conf_file.file.name.data;
         conf_file.line = 1;
-        conf_file.file.info.st_size = conf[j].conf.len + 1;
+        conf_file.file.info.st_size = conf->conf.len + 1;
         conf_file.file.offset = conf_file.file.info.st_size;
         conf_file.buffer->last = ngx_cpymem(conf_file.buffer->start,
-                conf[j].conf.data, conf[j].conf.len);
+                conf->conf.data, conf->conf.len);
 
         if (ngx_dump_config
 #if (NGX_DEBUG)
@@ -757,7 +926,7 @@ ngx_template_conf_apply(ngx_conf_t *cf, ngx_template_t *t)
 
             if (conf_file.dump != NULL)
                 conf_file.dump->last = ngx_cpymem(conf_file.dump->last,
-                    conf[j].conf.data, conf[j].conf.len);
+                    conf->conf.data, conf->conf.len);
         }
 
         *conf_file.buffer->last++ = '}';
@@ -839,7 +1008,7 @@ ngx_template_conf(ngx_conf_t *cf, ngx_template_t *t)
     t->keyfile = value[2];
 
     if (ngx_template_tag(cf, t->keyfile, &t->tag) == NGX_OK) {
-        if (ngx_template_conf_apply(cf, t) == NGX_OK)
+        if (ngx_template_conf_apply(cf, t, NULL) == NGX_OK)
             return NGX_CONF_OK;
     }
 
@@ -1068,8 +1237,8 @@ lookup(ngx_array_t *templates, ngx_str_t key, ngx_str_t *retval)
 
             for (i = 0; i < t->entries.nelts; i++) {
 
-            conf = (ngx_template_conf_t *)
-                    ((u_char *) t->entries.elts + i * t->entries.size);
+                conf = (ngx_template_conf_t *)
+                        ((u_char *) t->entries.elts + i * t->entries.size);
 
                 if (ngx_memn2cmp(lk.name.data, conf->name.data,
                                  lk.name.len, conf->name.len) == 0) {
@@ -1085,4 +1254,35 @@ lookup(ngx_array_t *templates, ngx_str_t key, ngx_str_t *retval)
     }
 
     return NGX_DECLINED;
+}
+
+
+ngx_template_conf_t *
+ngx_template_lookup_by_name(ngx_template_main_conf_t *tmcf,
+    ngx_str_t name)
+{
+    ngx_uint_t                 j, i;
+    ngx_template_t            *t;
+    ngx_template_conf_t       *conf;
+    ngx_array_t               *templates;
+
+    templates = &tmcf->templates;
+
+    for (j = 0; j < templates->nelts; j++) {
+
+        t = (ngx_template_t *)
+                ((u_char *) templates->elts + j * templates->size);
+
+        for (i = 0; i < t->entries.nelts; i++) {
+
+            conf = (ngx_template_conf_t *)
+                    ((u_char *) t->entries.elts + i * t->entries.size);
+
+            if (ngx_memn2cmp(conf->name.data, name.data,
+                             conf->name.len, name.len) == 0)
+                return conf;
+        }
+    }
+
+    return NULL;
 }

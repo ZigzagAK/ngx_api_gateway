@@ -12,10 +12,10 @@
 
 
 typedef struct {
-    ngx_str_t   key;
-    ngx_str_t  *elts;
-    ngx_uint_t  nelts;
-} ngx_template_list_t;
+    ngx_str_t      key;
+    ngx_str_t     *elts;
+    ngx_uint_t     nelts;
+} ngx_template_seq_t;
 
 
 typedef struct {
@@ -23,6 +23,7 @@ typedef struct {
     ngx_uint_t     nkeys;
     ngx_str_t      conf;
     ngx_str_t      name;
+    ngx_array_t    seqs;
 } ngx_template_conf_t;
 
 
@@ -53,22 +54,21 @@ void ngx_template_check_updates(ngx_template_main_conf_t *tmcf);
 
 ngx_int_t ngx_template_tag(ngx_conf_t *cf, ngx_str_t keyfile, ngx_str_t *tag);
 
-ngx_int_t ngx_template_read_template(ngx_conf_t *cf, ngx_str_t filename,
-    ngx_str_t *content, time_t *updated);
-
-ngx_str_t concat_path(ngx_pool_t *pool, ngx_str_t *path, ngx_int_t n);
-
 ngx_str_t ngx_strdup(ngx_pool_t *pool, u_char *s, size_t len);
-
-ngx_int_t ngx_conf_add_dump(ngx_conf_t *cf, ngx_str_t *filename);
 
 typedef ngx_int_t (*on_key_t)(ngx_str_t path, yaml_char_t *key, size_t key_len,
     ngx_pool_t *pool, yaml_parser_t *parser, ngx_template_conf_t *conf,
     ngx_str_t *retval);
 
+ngx_int_t
+ngx_template_conf_apply(ngx_conf_t *cf, ngx_template_t *t, on_key_t pfkey);
+
 ngx_int_t ngx_template_conf_parse_yaml(ngx_pool_t *pool, FILE *f,
     ngx_template_t *t, on_key_t pfkey);
 
 ngx_int_t lookup(ngx_array_t *templates, ngx_str_t key, ngx_str_t *retval);
+
+ngx_template_conf_t *
+ngx_template_lookup_by_name(ngx_template_main_conf_t *tmcf, ngx_str_t name);
 
 #endif /* NGX_TEMPLATE_H */

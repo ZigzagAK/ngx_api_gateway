@@ -1,3 +1,7 @@
+/*
+ * Copyright (C) Aleksey Konovkin (alkon2000@mail.ru).
+ */
+
 #include "ngx_api_gateway_router.h"
 #include "ngx_template.h"
 
@@ -16,12 +20,13 @@ ngx_api_gateway_router_init_conf(ngx_conf_t *cf,
                                     10, sizeof(ngx_mapping_regex_t)))
         return NGX_ERROR;
 
-    if (NGX_ERROR == ngx_trie_init(cf->pool, &conf->map.tree))
+    conf->map.trie = ngx_trie_create(cf);
+    if (conf->map.trie == NULL)
         return NGX_ERROR;
 
     return NGX_OK;
 }
-    
+
 
 char *
 ngx_api_gateway_router(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
@@ -58,14 +63,14 @@ ngx_api_gateway_router(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         *s = value[j];
     }
 
-    return post->post_handler(cf, cmd, gateway_conf);
+    return post->post_handler(cf, gateway_conf, conf);
 }
 
 
 ngx_int_t
 ngx_api_gateway_router_build(ngx_pool_t *pool,
     ngx_http_api_gateway_mapping_t *m, ngx_str_t backend,
-    ngx_template_list_t entries)
+    ngx_template_seq_t entries)
 {
     ngx_mapping_regex_t  *regex;
     ngx_uint_t            j;
@@ -79,7 +84,7 @@ ngx_api_gateway_router_build(ngx_pool_t *pool,
 
         if (path.data[0] != '~') {
 
-            if (ngx_trie_set(&m->tree, path, backend) == NGX_ERROR)
+            if (ngx_trie_set(m->trie, path, backend) == NGX_ERROR)
                 goto nomem;
 
             continue;
@@ -145,7 +150,7 @@ ngx_api_gateway_router_match(ngx_pool_t *temp_pool,
     int                   captures[3];
     ngx_keyval_t          retval;
 
-    switch (ngx_trie_find(&m->tree, uri, &retval, temp_pool)) {
+    switch (ngx_trie_find(m->trie, uri, &retval, temp_pool)) {
 
         case NGX_OK:
 

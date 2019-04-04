@@ -12,9 +12,9 @@ server {
 
         {{location.directives}}
 
-        api_gateway_router $backend  {{backends}};
-        api_gateway_router $first    {{first.backends}};
-        api_gateway_router $second   {{second.backends}};
+        api_gateway_router $backend:1m     {{backends}};
+        api_gateway_router $first:1m    {{first.backends}};
+        api_gateway_router $second:1m      {{second.backends}};
 
         proxy_connect_timeout {{proxy.connect_timeout}};
         proxy_read_timeout {{proxy.read_timeout}};
