@@ -21,7 +21,7 @@ static ngx_core_module_t ngx_template_ctx = {
 static ngx_command_t  ngx_template_commands[] = {
 
     { ngx_string("template"),
-      NGX_MAIN_CONF|NGX_CONF_TAKE2,
+      NGX_MAIN_CONF|NGX_CONF_TAKE12,
       ngx_template_directive,
       0,
       0,

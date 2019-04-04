@@ -58,7 +58,7 @@ static ngx_conf_post_t  ngx_api_gateway_router_post = {
 static ngx_command_t  ngx_http_api_gateway_commands[] = {
 
     { ngx_string("template"),
-      NGX_ALL_CONF|NGX_CONF_TAKE2,
+      NGX_ALL_CONF|NGX_CONF_TAKE12,
       ngx_template_directive,
       0,
       0,
@@ -72,7 +72,7 @@ static ngx_command_t  ngx_http_api_gateway_commands[] = {
       &ngx_api_gateway_router_post },
 
     { ngx_string("api_gateway_template"),
-      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE2|NGX_CONF_TAKE3,
+      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE23,
       ngx_api_gateway_template_directive,
       NGX_HTTP_MAIN_CONF_OFFSET,
       0,
@@ -188,7 +188,6 @@ static ngx_int_t
 ngx_api_gateway_create_mappings(ngx_conf_t *cf,
     ngx_http_api_gateway_loc_conf_t *glcf)
 {
-    ngx_api_gateway_main_conf_t  *gmcf;
     ngx_http_api_gateway_conf_t  *gateway_conf;
     ngx_template_conf_t          *conf;
     ngx_template_seq_t           *seq;
@@ -196,8 +195,6 @@ ngx_api_gateway_create_mappings(ngx_conf_t *cf,
     ngx_str_t                    *backend;
 
     static ngx_str_t api = ngx_string("api");
-
-    gmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_api_gateway_module);
 
     gateway_conf = glcf->entries.elts;
 
@@ -207,7 +204,7 @@ ngx_api_gateway_create_mappings(ngx_conf_t *cf,
 
         for (j = 0; j < gateway_conf[k].backends.nelts; j++) {
 
-            conf = ngx_template_lookup_by_name(&gmcf->base, backend[j]);
+            conf = ngx_template_lookup_by_name(cf->cycle, backend[j]);
             if (conf == NULL)
                 continue;
 
@@ -292,9 +289,9 @@ ngx_http_api_gateway_init_worker(ngx_cycle_t *cycle)
     amcf = ngx_http_cycle_get_module_main_conf(cycle,
             ngx_http_api_gateway_module);
 
-    if (amcf == NULL || amcf->base.templates.nelts == 0)
+    if (amcf == NULL || amcf->templates.nelts == 0)
         return NGX_OK;
-    
+
     ev = ngx_pcalloc(cycle->pool, sizeof(ngx_event_t));
     if (ev == NULL)
         return NGX_ERROR;

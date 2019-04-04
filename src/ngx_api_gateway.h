@@ -15,22 +15,16 @@
 
 
 typedef struct {
-    ngx_template_conf_t  base;
-    ngx_str_t            url;
-} ngx_api_gateway_conf_t;
+    ngx_template_t  t;
+    ngx_url_t       url;
+} ngx_api_gateway_template_t;
 
 
 typedef struct {
-    ngx_template_t       base;
-    ngx_url_t            url;
-} ngx_api_gateway_t;
-
-
-typedef struct {
-    ngx_template_main_conf_t  base;
-    ngx_msec_t                timeout;
-    ngx_msec_t                interval;
-    ngx_int_t                 request_path_index;
+    ngx_array_t  templates;
+    ngx_msec_t   timeout;
+    ngx_msec_t   interval;
+    ngx_int_t    request_path_index;
 } ngx_api_gateway_main_conf_t;
 
 
