@@ -30,17 +30,18 @@ ngx_api_gateway_create_main_conf(ngx_conf_t *cf)
 {
     ngx_api_gateway_main_conf_t  *amcf;
 
-    amcf = ngx_pcalloc(cf->pool, sizeof(ngx_api_gateway_main_conf_t));
+    amcf = ngx_pcalloc(cf->cycle->pool, sizeof(ngx_api_gateway_main_conf_t));
     if (amcf == NULL)
         return NULL;
 
-    if (ngx_array_init(&amcf->templates, cf->pool, 10,
+    if (ngx_array_init(&amcf->templates, cf->cycle->pool, 10,
                        sizeof(ngx_api_gateway_template_t)) == NGX_ERROR)
         return NULL;
 
     amcf->interval = NGX_CONF_UNSET_MSEC;
     amcf->timeout = NGX_CONF_UNSET_MSEC;
     amcf->request_path_index = NGX_ERROR;
+    amcf->cycle = cf->cycle;
 
     return amcf;
 }
@@ -106,7 +107,7 @@ ngx_api_gateway_template_directive(ngx_conf_t *cf, ngx_command_t *cmd,
         tgw->url.uri_part = 1;
         tgw->url.default_port = 80;
 
-        if (ngx_parse_url(cf->pool, &tgw->url) != NGX_OK) {
+        if (ngx_parse_url(cf->cycle->pool, &tgw->url) != NGX_OK) {
 
             ngx_conf_log_error(NGX_LOG_ERR, cf, ngx_errno,
                     "failed to parse url: %V", &tgw->url.url);
@@ -128,7 +129,8 @@ ngx_api_gateway_template_directive(ngx_conf_t *cf, ngx_command_t *cmd,
 
 typedef struct {
     ngx_api_gateway_template_t  *t;
-    ngx_pool_t                  *pool;
+    ngx_pool_t                  *temp_pool;
+    ngx_cycle_t                 *cycle;
 } context_t;
 
 
@@ -144,22 +146,24 @@ ngx_api_gateway_fetch_handler(ngx_int_t rc,
     ngx_template_t      t;
     ngx_tm_t            tm;
     u_char             *backup;
+    ngx_cycle_t        *cycle = ctx->cycle;
+    u_char             *c;
 
     if (rc == NGX_ERROR) {
 
-        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
                       "ngx_api_gateway upsync failed, url=%V",
                       &ctx->t->url.url);
         goto done;
     } else if (rc == NGX_DECLINED) {
 
-        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
                       "ngx_api_gateway upsync timeout, url=%V",
                       &ctx->t->url.url);
         goto done;
     } else if (rc != NGX_HTTP_OK && rc != NGX_HTTP_NO_CONTENT) {
 
-        ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, 0,
+        ngx_log_error(NGX_LOG_WARN, cycle->log, 0,
                       "ngx_api_gateway upsync status=%d "
                       "(not 200, 204), url=%V", rc, &ctx->t->url.url);
         goto done;
@@ -175,10 +179,10 @@ ngx_api_gateway_fetch_handler(ngx_int_t rc,
     t.filename = ctx->t->t.filename;
     t.pfkey = ngx_api_gateway_handle_key;
 
-    ngx_array_init(&t.entries, ctx->pool, 10, sizeof(ngx_template_conf_t));
+    ngx_array_init(&t.entries, ctx->temp_pool, 10, sizeof(ngx_template_conf_t));
 
     f = fmemopen(body->data, body->len, "r");
-    rc = ngx_template_conf_parse_yaml(ctx->pool, f, &t);
+    rc = ngx_template_conf_parse_yaml(cycle, ctx->temp_pool, f, &t);
     fclose(f);
 
     if (rc != NGX_OK)
@@ -188,12 +192,12 @@ ngx_api_gateway_fetch_handler(ngx_int_t rc,
                      body->len, ctx->t->t.yaml.len) == 0)
         goto done;
 
-    if (ngx_conf_full_name((ngx_cycle_t *) ngx_cycle, &keyfile, 1) != NGX_OK)
+    if (ngx_conf_full_name(cycle, &keyfile, 1) != NGX_OK)
         goto done;
 
     ngx_localtime(ngx_cached_time->sec, &tm);
 
-    backup = ngx_pcalloc(ctx->pool, keyfile.len + 64);
+    backup = ngx_pcalloc(ctx->temp_pool, keyfile.len + 64);
     if (backup == NULL)
         goto done;
 
@@ -201,45 +205,50 @@ ngx_api_gateway_fetch_handler(ngx_int_t rc,
         tm.tm_year, tm.tm_mon, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
 
     if (ngx_rename_file(keyfile.data, backup) == NGX_FILE_ERROR) {
-        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, errno,
+        ngx_log_error(NGX_LOG_ERR, cycle->log, errno,
                       ngx_rename_file_n " backup \"%V\" failed", &keyfile);
         goto done;
     }
 
     file.name = keyfile;
-    file.log = ngx_cycle->log;
+    file.log = cycle->log;
 
     file.fd = ngx_open_file(keyfile.data, NGX_FILE_WRONLY, NGX_FILE_TRUNCATE,
                             NGX_FILE_DEFAULT_ACCESS);
 
     if (file.fd == NGX_INVALID_FILE) {
-        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, ngx_errno,
+        ngx_log_error(NGX_LOG_ERR, cycle->log, ngx_errno,
                       ngx_open_file_n " \"%V\" failed", &keyfile);
         goto done;
     }
 
     if (ngx_write_file(&file, body->data, body->len, 0) == NGX_ERROR) {
-        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, ngx_errno,
+        ngx_log_error(NGX_LOG_ERR, cycle->log, ngx_errno,
                       ngx_write_fd_n " \"%V\" failed", &keyfile);
         goto done;
     }
 
     ngx_close_file(file.fd);
 
-    ctx->t->t.yaml.data = ngx_palloc(ngx_cycle->pool, body->len);
-    if (ctx->t->t.yaml.data != NULL) {
-        ngx_memcpy(ctx->t->t.yaml.data, body->data, body->len);
+    c = ngx_alloc(body->len, cycle->log);
+    if (c != NULL) {
+        ngx_free(ctx->t->t.yaml.data);
+        ngx_memcpy(c, body->data, body->len);
+        ctx->t->t.yaml.data = c;
         ctx->t->t.yaml.len = body->len;
+    } else {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0, "no memory");
     }
 
 done:
 
-    ngx_destroy_pool(ctx->pool);
+    ngx_destroy_pool(ctx->temp_pool);
 }
 
 
 static void
-ngx_api_gateway_fetch_gw(ngx_api_gateway_template_t *t, ngx_msec_t timeout)
+ngx_api_gateway_fetch_gw(ngx_cycle_t *cycle, ngx_api_gateway_template_t *t,
+    ngx_msec_t timeout)
 {
     ngx_pool_t        *pool;
     context_t         *ctx;
@@ -260,7 +269,8 @@ ngx_api_gateway_fetch_gw(ngx_api_gateway_template_t *t, ngx_msec_t timeout)
         return;
     }
 
-    ctx->pool = pool;
+    ctx->cycle = cycle;
+    ctx->temp_pool = pool;
     ctx->t = t;
 
     ngx_http_send_request(pool, GET, &t->url, NULL, 0, NULL, 0, NULL,
@@ -269,19 +279,19 @@ ngx_api_gateway_fetch_gw(ngx_api_gateway_template_t *t, ngx_msec_t timeout)
 
 
 static void
-ngx_api_gateway_fetch(ngx_array_t a, ngx_msec_t timeout)
+ngx_api_gateway_fetch(ngx_cycle_t *cycle, ngx_array_t a, ngx_msec_t timeout)
 {
     ngx_api_gateway_template_t  *t;
     ngx_uint_t                   j;
 
     t = a.elts;
     for (j = 0; j < a.nelts; j++)
-        ngx_api_gateway_fetch_gw(t + j, timeout);
+        ngx_api_gateway_fetch_gw(cycle, t + j, timeout);
 }
 
 
 void
 ngx_api_gateway_fetch_keys(ngx_api_gateway_main_conf_t *amcf)
 {
-    ngx_api_gateway_fetch(amcf->templates, amcf->timeout);
+    ngx_api_gateway_fetch(amcf->cycle, amcf->templates, amcf->timeout);
 }

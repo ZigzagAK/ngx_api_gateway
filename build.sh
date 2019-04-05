@@ -373,7 +373,7 @@ function download() {
   download_module https://github.com      openresty   echo-nginx-module                master
   download_module https://github.com      openresty   luajit2                          v2.1-agentzh
   download_module https://github.com      ZigzagAK    ngx_http_upsync_upstream         tags/1.0.2
-  download_module https://github.com      ZigzagAK    ngx_dynamic_upstream             tags/2.1.0
+  download_module https://github.com      ZigzagAK    ngx_dynamic_upstream             tags/2.1.1
   download_module https://github.com      ZigzagAK    ngx_dynamic_healthcheck          tags/1.2.5
 
   cd ..
