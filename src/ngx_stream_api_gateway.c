@@ -29,14 +29,14 @@ static ngx_stream_module_t ngx_stream_api_gateway_ctx = {
 static ngx_command_t  ngx_stream_api_gateway_commands[] = {
 
     { ngx_string("template"),
-      NGX_ALL_CONF|NGX_CONF_TAKE12,
+      NGX_ALL_CONF|NGX_CONF_TAKE123,
       ngx_template_directive,
       0,
       0,
       NULL },
 
     { ngx_string("api_gateway_template"),
-      NGX_STREAM_MAIN_CONF|NGX_CONF_TAKE23,
+      NGX_STREAM_MAIN_CONF|NGX_CONF_TAKE123,
       ngx_api_gateway_template_directive,
       NGX_STREAM_MAIN_CONF_OFFSET,
       0,

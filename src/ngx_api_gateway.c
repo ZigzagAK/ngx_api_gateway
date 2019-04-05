@@ -88,40 +88,41 @@ char *
 ngx_api_gateway_template_directive(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf)
 {
-    ngx_str_t                    *value = cf->args->elts;
-    ngx_api_gateway_main_conf_t  *amcf = conf;
     ngx_template_t               *t;
-    ngx_api_gateway_template_t   *tgw;
+    ngx_api_gateway_main_conf_t  *amcf = conf;
+    ngx_api_gateway_template_t   *gw;
+    ngx_uint_t                    j;
 
-    tgw = ngx_array_push(&amcf->templates);
-    if (tgw == NULL) {
+    t = ngx_template_add(cf, ngx_api_gateway_handle_key);
+    if (t == NULL)
+        return NGX_CONF_ERROR;
+
+    gw = ngx_array_push(&amcf->templates);
+    if (gw == NULL) {
         ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "no memory");
         return NGX_CONF_ERROR;
     }
 
-    ngx_memzero(tgw, sizeof(ngx_api_gateway_template_t));
+    ngx_memzero(gw, sizeof(ngx_api_gateway_template_t));
 
-    if (cf->args->nelts > 3) {
+    for (j = 0; j < t->args.nelts; j++) {
 
-        tgw->url.url = value[3];
-        tgw->url.uri_part = 1;
-        tgw->url.default_port = 80;
+        if (ngx_eqstr(t->args.elts[j].key, "url")) {
 
-        if (ngx_parse_url(cf->cycle->pool, &tgw->url) != NGX_OK) {
+            gw->url.url = t->args.elts[j].value;
+            gw->url.uri_part = 1;
+            gw->url.default_port = 80;
 
-            ngx_conf_log_error(NGX_LOG_ERR, cf, ngx_errno,
-                    "failed to parse url: %V", &tgw->url.url);
-            return NGX_CONF_ERROR;
+            if (ngx_parse_url(cf->cycle->pool, &gw->url) != NGX_OK) {
+
+                ngx_conf_log_error(NGX_LOG_ERR, cf, ngx_errno,
+                    "failed to parse url: %V, %s", &gw->url.url, gw->url.err);
+                return NGX_CONF_ERROR;
+            }
         }
     }
 
-    t = ngx_template_add(cf, ngx_api_gateway_handle_key);
-    if (t == NULL) {
-        amcf->templates.nelts--;
-        return NGX_CONF_ERROR;
-    }
-
-    tgw->t = *t;
+    gw->t = *t;
 
     return NGX_CONF_OK;
 }

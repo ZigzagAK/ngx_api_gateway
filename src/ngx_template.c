@@ -1005,23 +1005,51 @@ ngx_template_tag(ngx_conf_t *cf, ngx_str_t keyfile, ngx_str_t *tag)
 }
 
 
+ngx_flag_t
+ngx_eqstr(ngx_str_t s, const char *c)
+{
+    return ngx_memn2cmp(s.data, (u_char *) c, s.len, ngx_strlen(c)) == 0;
+}
+
+
 static char *
 ngx_template_conf(ngx_conf_t *cf, ngx_template_t *t)
 {
-    ngx_str_t  *value;
+    ngx_uint_t  j;
 
-    value = cf->args->elts;
+    if (ngx_parse_args(cf, &t->args.elts, &t->args.nelts) == NGX_ERROR)
+        return NGX_CONF_ERROR;
 
-    t->keyfile = value[1];
-    if (cf->args->nelts > 2)
-        t->filename = value[2];
-    else {
+    for (j = 0; j < t->args.nelts; j++) {
+
+        if (ngx_eqstr(t->args.elts[j].key, "template"))
+            t->filename = t->args.elts[j].value;
+
+        if (ngx_eqstr(t->args.elts[j].key, "keyfile"))
+            t->keyfile = t->args.elts[j].value;
+
+        if (ngx_eqstr(t->args.elts[j].key, "tag"))
+            t->tag = t->args.elts[j].value;
+    }
+
+    if (t->filename.data == NULL) {
+        // template may be empty
         ngx_str_set(&t->filename, "-");
     }
 
-    if (ngx_template_tag(cf, t->keyfile, &t->tag) == NGX_OK)
-        if (ngx_template_conf_apply(cf, t) == NGX_OK)
-            return NGX_CONF_OK;
+    if (t->tag.data == NULL) {
+        if (ngx_template_tag(cf, t->keyfile, &t->tag) == NGX_ERROR)
+            return NGX_CONF_ERROR;
+    }
+
+    if (t->keyfile.data == NULL) {
+        ngx_conf_log_error(NGX_LOG_ERR, cf, 0,
+                           "\"keyfile\" parameter required");
+        return NGX_CONF_ERROR;
+    }
+
+    if (ngx_template_conf_apply(cf, t) == NGX_OK)
+        return NGX_CONF_OK;
 
     return NGX_CONF_ERROR;
 }
@@ -1081,6 +1109,7 @@ ngx_template_check_template(ngx_cycle_t *cycle, ngx_template_t *old)
 
     ngx_memzero(&t, sizeof(ngx_template_t));
 
+    t.tag = old->tag;
     t.filename = old->filename;
     t.keyfile = old->keyfile;
     t.pfkey = old->pfkey;
@@ -1127,8 +1156,6 @@ ngx_template_check_template(ngx_cycle_t *cycle, ngx_template_t *old)
                       ngx_fd_info_n " \"%V\" failed", &t.keyfile);
         goto done;
     }
-
-    ngx_template_tag(&cf, t.keyfile, &t.tag);
 
     if (ngx_template_read_template(&cf, t.filename, &t.template, &t.updated)
             != NGX_OK)
@@ -1203,7 +1230,7 @@ split(ngx_str_t key)
     // tag
 
     opts.tag.data = key.data;
-    while (c < key.data + key.len && *c != '.')
+    while (c < key.data + key.len && *c != ':')
         c++;
     opts.tag.len = c - opts.tag.data;
 
@@ -1277,7 +1304,7 @@ lookup(ngx_cycle_t *cycle, ngx_pool_t *pool, ngx_str_t key, ngx_str_t *retval)
 
 
 ngx_template_conf_t *
-ngx_template_lookup_by_name(ngx_cycle_t *cycle, ngx_str_t name)
+ngx_template_lookup_by_name(ngx_cycle_t *cycle, ngx_str_t name, ngx_str_t tag)
 {
     ngx_template_main_conf_t  *tmcf;
     ngx_uint_t                 j, i;
@@ -1295,6 +1322,10 @@ ngx_template_lookup_by_name(ngx_cycle_t *cycle, ngx_str_t name)
         t = (ngx_template_t *)
                 ((u_char *) templates->elts + j * templates->size);
 
+        if (tag.data != NULL
+            && ngx_memn2cmp(t->tag.data, tag.data, t->tag.len, tag.len) != 0)
+            continue;
+
         for (i = 0; i < t->entries.nelts; i++) {
 
             conf = (ngx_template_conf_t *)
@@ -1307,4 +1338,55 @@ ngx_template_lookup_by_name(ngx_cycle_t *cycle, ngx_str_t name)
     }
 
     return NULL;
+}
+
+
+ngx_keyval_t
+ngx_split(ngx_str_t s, u_char c)
+{
+    ngx_keyval_t   kv = { s, ngx_null_string };
+    u_char        *size;
+
+    size = ngx_strlchr(s.data, s.data + s.len, c);
+    if (size == NULL)
+        return kv;
+
+    *size = 0;
+
+    kv.key.len = size - kv.key.data;
+    kv.value.data = ++size;
+    kv.value.len = s.data + s.len - kv.value.data;
+
+    return kv;
+}
+
+
+ngx_int_t
+ngx_parse_args(ngx_conf_t *cf, ngx_keyval_t **elts,
+    ngx_uint_t *nelts)
+{
+    ngx_array_t    a;
+    ngx_keyval_t  *kv;
+    ngx_uint_t     j;
+    ngx_str_t     *value;
+
+    if (ngx_array_init(&a, cf->pool, cf->args->nelts, sizeof(ngx_keyval_t))
+            == NGX_ERROR)
+        return NGX_ERROR;
+
+    value = cf->args->elts;
+
+    for (j = 1; j < cf->args->nelts; j++) {
+
+        kv = ngx_array_push(&a);
+        if (kv == NULL)
+            return NGX_ERROR;
+
+        *kv = ngx_split(value[j], '=');
+    }
+
+    *elts = a.elts;
+    *nelts = a.nelts;
+
+    return NGX_OK;
 }

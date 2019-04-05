@@ -58,7 +58,7 @@ static ngx_conf_post_t  ngx_api_gateway_router_post = {
 static ngx_command_t  ngx_http_api_gateway_commands[] = {
 
     { ngx_string("template"),
-      NGX_ALL_CONF|NGX_CONF_TAKE12,
+      NGX_ALL_CONF|NGX_CONF_TAKE123,
       ngx_template_directive,
       0,
       0,
@@ -72,7 +72,7 @@ static ngx_command_t  ngx_http_api_gateway_commands[] = {
       &ngx_api_gateway_router_post },
 
     { ngx_string("api_gateway_template"),
-      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE23,
+      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE123,
       ngx_api_gateway_template_directive,
       NGX_HTTP_MAIN_CONF_OFFSET,
       0,
@@ -193,6 +193,8 @@ ngx_api_gateway_create_mappings(ngx_conf_t *cf,
     ngx_template_seq_t           *seq;
     ngx_uint_t                    k, j, i;
     ngx_str_t                    *backend;
+    ngx_keyval_t                  kv;
+    ngx_str_t                     tag, name;
 
     static ngx_str_t api = ngx_string("api");
 
@@ -204,7 +206,21 @@ ngx_api_gateway_create_mappings(ngx_conf_t *cf,
 
         for (j = 0; j < gateway_conf[k].backends.nelts; j++) {
 
-            conf = ngx_template_lookup_by_name(cf->cycle, backend[j]);
+            kv = ngx_split(backend[j], ':');
+
+            if (kv.value.data != NULL) {
+
+                name = kv.value;
+                tag = kv.key;
+
+            } else {
+
+                name = kv.key;
+                ngx_str_null(&tag);
+
+            }
+            
+            conf = ngx_template_lookup_by_name(cf->cycle, name, tag);
             if (conf == NULL)
                 continue;
 
@@ -383,26 +399,6 @@ ngx_api_gateway_router_var(ngx_http_request_t *r,
 }
 
 
-static ngx_keyval_t
-split_var(ngx_str_t var)
-{
-    ngx_keyval_t   kv = { var, ngx_null_string };
-    u_char        *size;
-
-    size = ngx_strlchr(var.data, var.data + var.len, ':');
-    if (size == NULL)
-        return kv;
-
-    *size = 0;
-
-    kv.key.len = size - kv.key.data;
-    kv.value.data = ++size;
-    kv.value.len = var.data + var.len - kv.value.data;
-
-    return kv;
-}
-
-
 static ngx_int_t
 ngx_api_gateway_router_init_shtrie(ngx_shm_zone_t *zone, void *old);
 
@@ -418,7 +414,7 @@ ngx_api_gateway_router_add_variable(ngx_conf_t *cf, void *data, void *conf)
     ngx_array_t                      *a;
     router_var_ctx_t                 *ctx;
 
-    kv = split_var(gateway_conf->var);
+    kv = ngx_split(gateway_conf->var, ':');
 
     var = ngx_http_add_variable(cf, &kv.key,
                                 NGX_HTTP_VAR_CHANGEABLE);

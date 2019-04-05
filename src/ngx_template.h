@@ -33,7 +33,13 @@ typedef ngx_int_t (*on_key_t)(ngx_str_t path, yaml_char_t *key, size_t key_len,
 
 
 typedef struct {
+    ngx_keyval_t  *elts;
+    ngx_uint_t     nelts;
+} ngx_args_t;
+
+typedef struct {
     ngx_str_t      tag;
+    ngx_args_t     args;
     ngx_array_t    entries;
     ngx_str_t      keyfile;
     ngx_str_t      yaml;
@@ -59,6 +65,13 @@ void ngx_template_check_updates(ngx_template_main_conf_t *tmcf);
 
 /* helpers */
 
+ngx_keyval_t ngx_split(ngx_str_t s, u_char c);
+
+ngx_int_t ngx_parse_args(ngx_conf_t *cf, ngx_keyval_t **args,
+    ngx_uint_t *nargs);
+
+ngx_flag_t ngx_eqstr(ngx_str_t s, const char *c);
+
 ngx_str_t ngx_strdup(ngx_pool_t *pool, u_char *s, size_t len);
 
 ngx_template_t * ngx_template_add(ngx_conf_t *cf, on_key_t pfkey);
@@ -70,6 +83,6 @@ ngx_int_t lookup(ngx_cycle_t *cycle, ngx_pool_t *pool,
     ngx_str_t key, ngx_str_t *retval);
 
 ngx_template_conf_t * ngx_template_lookup_by_name(ngx_cycle_t *cycle,
-    ngx_str_t name);
+    ngx_str_t name, ngx_str_t tag);
 
 #endif /* NGX_TEMPLATE_H */
