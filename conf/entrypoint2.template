@@ -3,14 +3,14 @@ server {
 
     default_type text/plain;
 
- {{server.directives}}
+    {{server.directives|default()}}
 
- {{server.locations}}
+    {{server.locations|default()}}
 
     location / {
         auth_request {{auth.request}};
 
-        {{location.directives}}
+        {{location.directives|default()}}
 
         api_gateway_router $backend:1m     {{backends}};
         api_gateway_router $first:1m    {{first.backends}};
@@ -18,6 +18,12 @@ server {
 
         proxy_connect_timeout {{proxy.connect_timeout}};
         proxy_read_timeout {{proxy.read_timeout}};
+
+        set $a $backend$first$second;
+
+        if ($a = '') {
+            return 404 'No route';
+        }
 
         if ($backend) {
             proxy_pass {{proxy.protocol}}://$backend;
@@ -29,12 +35,6 @@ server {
 
         if ($second) {
             proxy_pass {{proxy.protocol}}://$second;
-        }
-
-        set $a $backend$first$second;
-
-        if ($a = '') {
-            return 404 'No route';
         }
     }
 

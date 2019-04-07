@@ -193,8 +193,6 @@ ngx_api_gateway_create_mappings(ngx_conf_t *cf,
     ngx_template_seq_t           *seq;
     ngx_uint_t                    k, j, i;
     ngx_str_t                    *backend;
-    ngx_keyval_t                  kv;
-    ngx_str_t                     tag, name;
 
     static ngx_str_t api = ngx_string("api");
 
@@ -206,21 +204,7 @@ ngx_api_gateway_create_mappings(ngx_conf_t *cf,
 
         for (j = 0; j < gateway_conf[k].backends.nelts; j++) {
 
-            kv = ngx_split(backend[j], ':');
-
-            if (kv.value.data != NULL) {
-
-                name = kv.value;
-                tag = kv.key;
-
-            } else {
-
-                name = kv.key;
-                ngx_str_null(&tag);
-
-            }
-            
-            conf = ngx_template_lookup_by_name(cf->cycle, name, tag);
+            conf = ngx_template_lookup_by_name(cf->cycle, backend[j]);
             if (conf == NULL)
                 continue;
 

@@ -2,11 +2,7 @@
 entrypoints:
 
   - name: app1
-    listen: env(LISTEN_PORT)
-    server:
-      directives: []
-    location:
-      directives: []
+    listen: "{{env(LISTEN_PORT)|default(33333)}}"
     auth:
       request: /auth_stub
     proxy:
@@ -14,15 +10,11 @@ entrypoints:
       read_timeout: 60s
       protocol: http
     backends:
-      - app1
+      - backends:app1
     map: []
 
   - name: app2
     listen: 8081
-    server:
-      directives: []
-    location:
-      directives: []
     auth:
       request: /auth_stub
     proxy:
@@ -30,10 +22,9 @@ entrypoints:
       read_timeout: 60s
       protocol: http
     backends:
-      - app1
-      - app2
+      - backends@app1
+      - backends@app2
     map:
       - a 1;\n
       - b 2;\n
       - c 3;
-      

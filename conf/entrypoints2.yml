@@ -8,8 +8,8 @@ entrypoints2:
         - set $variable1 1;\n
         - set $variable2 2;
       locations:
-        - location ~* ^/app1/.+\.(jpg|gif|png)$ { proxy_pass http://app1; }\n
-        - location ~* ^/app2/.+\.(jpg|gif|png)$ { proxy_pass http://app2; }
+        - location ~* ^/app1/.+\.(jpg|gif|png)$ { proxy_pass http://backends@app1; }\n
+        - location ~* ^/app2/.+\.(jpg|gif|png)$ { proxy_pass http://backends@app2; }
     location:
       directives:
         - set $variable3 3;
@@ -21,10 +21,10 @@ entrypoints2:
       read_timeout: 600s
       protocol: http
     backends:
-      - app1
+      - backends@app1
     first:
       backends:
-        - app2
+        - backends@app2
     second:
       backends:
-        - app3
+        - backends2@app3

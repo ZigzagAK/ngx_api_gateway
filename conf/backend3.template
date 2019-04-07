@@ -6,8 +6,8 @@ upstream {{name}} {
 
  {{servers}}
 
-    check passive type=http rise={{check:default.rise}} fall={{check:default.fall}} timeout={{check:default.timeout}} interval={{check:default.interval}};
-    check_request_uri {{check:default.request.method}} {{check:default.request.uri}};
-    check_response_codes {{check:default.response.codes}};
+    check passive type=http rise={{ check.rise | check@http.rise | default(1) }} fall={{ check.fall | check@http.fall | default(1) }} timeout={{ check.timeout | check@http.timeout | default(1000) }} interval={{ check.interval | check@http.interval | default(10) }};
+    check_request_uri {{ check.request.method | check@http.request.method | default(GET) }} {{ check.request.uri | check@http.request.uri | default(/health) }};
+    check_response_codes {{ check.response.codes | default(200 204) }};
 }
 

@@ -19,6 +19,7 @@ typedef struct {
 
 
 typedef struct {
+    ngx_str_t      group;
     ngx_keyval_t  *keys;
     ngx_uint_t     nkeys;
     ngx_str_t      conf;
@@ -38,7 +39,7 @@ typedef struct {
 } ngx_args_t;
 
 typedef struct {
-    ngx_str_t      tag;
+    ngx_str_t      group;
     ngx_args_t     args;
     ngx_array_t    entries;
     ngx_str_t      keyfile;
@@ -65,6 +66,8 @@ void ngx_template_check_updates(ngx_template_main_conf_t *tmcf);
 
 /* helpers */
 
+void ngx_trim(ngx_str_t *s);
+
 ngx_keyval_t ngx_split(ngx_str_t s, u_char c);
 
 ngx_int_t ngx_parse_args(ngx_conf_t *cf, ngx_keyval_t **args,
@@ -83,6 +86,6 @@ ngx_int_t lookup(ngx_cycle_t *cycle, ngx_pool_t *pool,
     ngx_str_t key, ngx_str_t *retval);
 
 ngx_template_conf_t * ngx_template_lookup_by_name(ngx_cycle_t *cycle,
-    ngx_str_t name, ngx_str_t tag);
+    ngx_str_t name);
 
 #endif /* NGX_TEMPLATE_H */

@@ -1,11 +1,12 @@
 ---
 test.be:
 
-  - name: test.be:be1
+  - name: be1
     api:
       - /be1/fun1
       - /be1/fun2
       - /be1/fun3
+      - /be1/*/ping
     dns:
       update: 60s
     server:
@@ -19,11 +20,12 @@ test.be:
       - server 127.0.0.2:3333 max_conns={{server.max_conns}} max_fails={{server.max_fails}} fail_timeout={{server.fail_timeout}};\n
       - server 127.0.0.2:4444 max_conns={{server.max_conns}} max_fails={{server.max_fails}} fail_timeout={{server.fail_timeout}};
 
-  - name: test.be:be2
+  - name: be2
     api:
       - /be2/fun1
       - /be2/fun2
       - /be2/fun3
+      - /be2/*/ping
     dns:
       update: 60s
     server:
@@ -39,7 +41,7 @@ test.be:
 
 test.fe:
 
-  - name: fe1
+  - name: fe
     listen: 22222
     auth:
       request: /auth_stub
@@ -48,5 +50,5 @@ test.fe:
       read_timeout: 600s
       protocol: http
     backends:
-      - test.be:be1
-      - test.be:be2
+      - test.be@be1
+      - test.be@be2

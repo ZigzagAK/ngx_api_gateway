@@ -173,7 +173,7 @@ ngx_api_gateway_fetch_handler(ngx_int_t rc,
     if (rc != NGX_HTTP_OK)
         goto done;
 
-    t.tag = ctx->t->t.tag;
+    t.group = ctx->t->t.group;
     t.filename = ctx->t->t.filename;
     t.keyfile = ctx->t->t.keyfile;
     t.template = ctx->t->t.template;
