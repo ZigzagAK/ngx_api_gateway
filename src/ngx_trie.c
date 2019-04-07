@@ -1,3 +1,7 @@
+/*
+ * Copyright (C) Aleksey Konovkin (alkon2000@mail.ru).
+ */
+
 #include "ngx_trie.h"
 
 
@@ -44,30 +48,6 @@ ngx_trie_deallocate(ngx_trie_t *trie, void *p)
     }
 
     ngx_pfree(trie->pool, p);
-}
-
-
-static void
-ngx_trie_rlock(ngx_trie_t *trie)
-{
-    if (trie->slab != NULL)
-        ngx_rwlock_rlock(&trie->lock);
-}
-
-
-static void
-ngx_trie_wlock(ngx_trie_t *trie)
-{
-    if (trie->slab != NULL)
-        ngx_rwlock_wlock(&trie->lock);
-}
-
-
-static void
-ngx_trie_unlock(ngx_trie_t *trie)
-{
-    if (trie->slab != NULL)
-        ngx_rwlock_unlock(&trie->lock);
 }
 
 
@@ -229,8 +209,6 @@ ngx_trie_set(ngx_trie_t *trie, ngx_str_t path, ngx_str_t value)
     if (split(trie, path, word, MAX_URI_PARTS) == NGX_ERROR)
         return NGX_ERROR;
 
-    ngx_trie_wlock(trie);
-
     for (j = 0; word[j].data != NULL; j++) {
 
         if (value.data != NULL) {
@@ -238,10 +216,8 @@ ngx_trie_set(ngx_trie_t *trie, ngx_str_t path, ngx_str_t value)
             // insert
 
             next = ngx_trie_insert_node(trie, &node->next, word[j]);
-            if (next == NULL) {
-                ngx_trie_unlock(trie);
+            if (next == NULL)
                 return NGX_ERROR;
-            }
 
         } else {
 
@@ -265,10 +241,8 @@ ngx_trie_set(ngx_trie_t *trie, ngx_str_t path, ngx_str_t value)
                 // new node added
 
                 next->path = ngx_trie_dupstr(trie, path);
-                if (next->path.data == NULL) {
-                    ngx_trie_unlock(trie);
+                if (next->path.data == NULL)
                     return NGX_ERROR;
-                }
             }
 
             if (value.data != NULL) {
@@ -276,18 +250,14 @@ ngx_trie_set(ngx_trie_t *trie, ngx_str_t path, ngx_str_t value)
                 // insert
 
                 next->value = ngx_trie_dupstr(trie, value);
-                if (next->value.data == NULL) {
-                    ngx_trie_unlock(trie);
+                if (next->value.data == NULL)
                     return NGX_ERROR;
-                }
 
             }
         }
 
         node = next;
     }
-
-    ngx_trie_unlock(trie);
 
     return NGX_OK;
 }
@@ -316,8 +286,6 @@ ngx_trie_find(ngx_trie_t *trie, ngx_str_t *path, ngx_keyval_t *retval,
     if (split(trie, *path, word, MAX_URI_PARTS) == NGX_ERROR)
         return NGX_ERROR;
 
-    ngx_trie_rlock(trie);
-
     for (j = 0; word[j].data != NULL; j++) {
 
         next = ngx_trie_lookup(&node->next, word[j]);
@@ -343,61 +311,7 @@ ngx_trie_find(ngx_trie_t *trie, ngx_str_t *path, ngx_keyval_t *retval,
         rc = NGX_OK;
     }
 
-    ngx_trie_unlock(trie);
-
     return rc;
-}
-
-static uint32_t
-ngx_trie_hash_node(ngx_trie_node_t *parent, uint32_t hash)
-{
-    ngx_rbtree_t       *rbtree = &parent->next;
-    ngx_rbtree_node_t  *node, *root, *sentinel;
-    ngx_trie_node_t    *trie_node;
-
-    hash ^= ngx_crc32_short(parent->path.data, parent->path.len);
-    hash ^= ngx_crc32_short(parent->value.data, parent->value.len);
-
-    sentinel = rbtree->sentinel;
-    root = rbtree->root;
-
-    if (root == sentinel)
-        return 0;
-
-    for (node = ngx_rbtree_min(root, sentinel);
-         node;
-         node = ngx_rbtree_next(rbtree, node))
-    {
-        trie_node = (ngx_trie_node_t *) node;
-        hash ^= ngx_trie_hash_node(trie_node, hash);
-    }
-
-    return hash;
-}
-
-
-uint32_t
-ngx_trie_hash(ngx_trie_t *trie)
-{
-    uint32_t       hash = 0xABCD;
-    ngx_uint_t     j;
-    ngx_keyval_t  *kv;
-
-    ngx_trie_rlock(trie);
-
-    if (trie->data.nelts == 0)
-        hash = ngx_trie_hash_node(&trie->root, hash);
-    else {
-        kv = trie->data.elts;
-        for (j = 0; j < trie->data.nelts; j++) {
-            hash ^= ngx_crc32_short(kv[j].key.data, kv[j].key.len);
-            hash ^= ngx_crc32_short(kv[j].value.data, kv[j].value.len);
-        }
-    }
-
-    ngx_trie_unlock(trie);
-
-    return hash;
 }
 
 
@@ -439,9 +353,6 @@ ngx_trie_swap(ngx_trie_t *dst, ngx_trie_t *src)
 {
     ngx_trie_t  tmp;
 
-    ngx_trie_wlock(dst);
-    ngx_trie_wlock(src);
-
     tmp.root = src->root;
     tmp.pool = src->pool;
     tmp.slab = src->slab;
@@ -456,9 +367,6 @@ ngx_trie_swap(ngx_trie_t *dst, ngx_trie_t *src)
     dst->pool = tmp.pool;
     dst->slab = tmp.slab;
     dst->data = tmp.data;
-
-    ngx_trie_unlock(src);
-    ngx_trie_unlock(dst);
 
     return dst;
 }

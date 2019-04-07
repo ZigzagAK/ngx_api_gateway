@@ -25,9 +25,7 @@ typedef struct {
     ngx_trie_node_t   root;
     ngx_pool_t       *pool;
     ngx_slab_pool_t  *slab;
-    ngx_atomic_t      lock;
     ngx_array_t       data;
-    uint32_t          hash;
 } ngx_trie_t;
 
 
@@ -47,7 +45,5 @@ ngx_int_t ngx_trie_find(ngx_trie_t *trie, ngx_str_t *path, ngx_keyval_t *retval,
 void ngx_trie_free(ngx_trie_t *trie);
 
 ngx_trie_t * ngx_trie_swap(ngx_trie_t *dst, ngx_trie_t *src);
-
-uint32_t ngx_trie_hash(ngx_trie_t *trie);
 
 #endif /* NGX_TRIE_H */

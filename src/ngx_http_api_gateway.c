@@ -195,10 +195,20 @@ ngx_api_gateway_create_mappings(ngx_conf_t *cf,
     ngx_str_t                    *backend;
 
     static ngx_str_t api = ngx_string("api");
-
+    
     gateway_conf = glcf->entries.elts;
 
     for (k = 0; k < glcf->entries.nelts; k++) {
+
+        if (gateway_conf[k].init)
+            continue;
+
+        gateway_conf[k].init = 1;
+
+        if (gateway_conf->zone == NULL) {
+            if (ngx_trie_init(gateway_conf[k].map.trie) == NGX_ERROR)
+                return NGX_ERROR;
+        }
 
         backend = gateway_conf[k].backends.elts;
 
@@ -216,18 +226,13 @@ ngx_api_gateway_create_mappings(ngx_conf_t *cf,
                                  seq[i].key.len, api.len) != 0)
                     continue;
 
-                if (gateway_conf->zone == NULL) {
-                    if (ngx_trie_init(gateway_conf[k].map.trie) == NGX_ERROR)
-                        return NGX_ERROR;
-                }
-
-                if (ngx_api_gateway_router_build(cf->pool, &gateway_conf[k].map,
-                        conf->name, seq[i]) == NGX_ERROR)
+                if (ngx_api_gateway_router_build(cf->cycle, cf->pool,
+                        &gateway_conf[k].map, conf->name, seq[i]) == NGX_ERROR)
                     return NGX_ERROR;
             }
         }
     }
-
+    
     return NGX_OK;
 }
 
@@ -252,7 +257,7 @@ ngx_api_gateway_merge_loc_conf(ngx_conf_t *cf,
             return NGX_CONF_ERROR;
         *c = gateway_conf[j];
     }
-    
+
     if (ngx_api_gateway_create_mappings(cf, child) == NGX_OK)
         return NGX_CONF_OK;
 
@@ -437,6 +442,7 @@ ngx_api_gateway_router_add_variable(ngx_conf_t *cf, void *data, void *conf)
     if (gateway_conf->zone == NULL)
         return NGX_CONF_ERROR;
 
+    gateway_conf->zone->noreuse = 1;
     gateway_conf->zone->data = gateway_conf;
     gateway_conf->zone->init = ngx_api_gateway_router_init_shtrie;
 
@@ -447,58 +453,25 @@ ngx_api_gateway_router_add_variable(ngx_conf_t *cf, void *data, void *conf)
 static ngx_int_t
 ngx_api_gateway_router_init_shtrie(ngx_shm_zone_t *zone, void *old)
 {
-    ngx_http_api_gateway_conf_t   *ctx, *octx;
+    ngx_http_api_gateway_conf_t   *conf;
     ngx_http_api_gateway_shctx_t  *sh;
     ngx_slab_pool_t               *slab;
-    ngx_trie_t                    *prev = NULL, *trie;
-    uint32_t                       hash = 0;
-    
-    ctx = zone->data;
+
+    conf = zone->data;
 
     slab = (ngx_slab_pool_t *) zone->shm.addr;
 
-    if (old != NULL) {
-        
-        octx = old;
-        sh = slab->data;
-
-        hash = ngx_trie_hash(ctx->map.trie);
-
-        if (octx->map.trie->hash == hash) {
-
-            ctx->sh = sh;
-            ctx->map = sh->map;
-
-            return NGX_OK;
-        }
-
-        prev = sh->map.trie;
-
-    } else {
-
-        sh = ngx_slab_calloc(slab, sizeof(ngx_http_api_gateway_shctx_t));
-        if (sh == NULL)
-            return NGX_ERROR;
-
-        sh->slab = slab;
-        slab->data = sh;
-
-        hash = ngx_trie_hash(ctx->map.trie);
-    }
-
-    trie = ngx_trie_shm_init(ctx->map.trie, slab);
-    if (trie == NULL)
+    sh = ngx_slab_calloc(slab, sizeof(ngx_http_api_gateway_shctx_t));
+    if (sh == NULL)
         return NGX_ERROR;
 
-    if (prev != NULL) {
-        // replace incapsulated data and free old
-        ngx_trie_free(ngx_trie_swap(prev, trie));
-    } else
-        sh->map.trie = trie;
+    sh->slab = slab;
+    slab->data = sh;
 
-    ctx->sh = sh;
-    ctx->map = sh->map;
-    sh->map.trie->hash = hash;
+    ngx_api_gateway_router_init(conf, sh);
+
+    conf->sh = sh;
+    conf->map = sh->map;
 
     return NGX_OK;
 }

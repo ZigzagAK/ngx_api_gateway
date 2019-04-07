@@ -10,7 +10,7 @@ entrypoints:
       read_timeout: 60s
       protocol: http
     backends:
-      - backends:app1
+      - backends@app1
     map: []
 
   - name: app2

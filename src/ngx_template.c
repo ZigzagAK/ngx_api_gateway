@@ -1109,7 +1109,7 @@ ngx_template_conf(ngx_conf_t *cf, ngx_template_t *t)
         if (ngx_eqstr(t->args.elts[j].key, "keyfile"))
             t->keyfile = t->args.elts[j].value;
 
-        if (ngx_eqstr(t->args.elts[j].key, "tag"))
+        if (ngx_eqstr(t->args.elts[j].key, "group"))
             t->group = t->args.elts[j].value;
     }
 
