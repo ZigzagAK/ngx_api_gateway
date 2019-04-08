@@ -52,11 +52,15 @@ static void
 ngx_template_handler(ngx_event_t *ev)
 {
     ngx_template_main_conf_t  *tmcf;
+
     tmcf = (ngx_template_main_conf_t *) ngx_get_conf(ngx_cycle->conf_ctx,
                                                      ngx_template_module);
+
     if (ngx_quit || ngx_terminate || ngx_exiting)
         return;
+
     ngx_template_check_updates(tmcf);
+
     ngx_add_timer(ev, 1000);
 }
 
@@ -69,9 +73,6 @@ ngx_template_init_worker(ngx_cycle_t *cycle)
     static ngx_connection_t    c = { .fd = -1 };
 
     if (ngx_process != NGX_PROCESS_WORKER && ngx_process != NGX_PROCESS_SINGLE)
-        return NGX_OK;
-
-    if (ngx_worker != 0)
         return NGX_OK;
 
     tmcf = (ngx_template_main_conf_t *) ngx_get_conf(cycle->conf_ctx,
@@ -88,7 +89,7 @@ ngx_template_init_worker(ngx_cycle_t *cycle)
     ev->data = &c;
     ev->handler = ngx_template_handler;
 
-    ngx_add_timer(ev, 1000);
+    ngx_add_timer(ev, 10000);
 
     return NGX_OK;
 }

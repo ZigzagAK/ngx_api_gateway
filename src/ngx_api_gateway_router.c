@@ -16,22 +16,24 @@ extern ngx_module_t ngx_http_api_gateway_module;
 
 
 ngx_int_t
-ngx_api_gateway_router_init_conf(ngx_conf_t *cf,
-    ngx_http_api_gateway_conf_t *gateway_conf)
+ngx_api_gateway_router_init_conf(ngx_conf_t *cf, ngx_pool_t *pool,
+    ngx_http_api_gateway_router_t *router)
 {
-    if (NGX_ERROR == ngx_array_init(&gateway_conf->backends, cf->pool,
+    ngx_memzero(router, sizeof(ngx_http_api_gateway_router_t));
+
+    if (NGX_ERROR == ngx_array_init(&router->backends, cf->cycle->pool,
                                     10, sizeof(ngx_str_t)))
         return NGX_ERROR;
 
-    gateway_conf->map.trie = ngx_trie_create(cf);
-    if (gateway_conf->map.trie == NULL)
+    router->map.trie = ngx_trie_create(pool);
+    if (router->map.trie == NULL)
         return NGX_ERROR;
 
-    gateway_conf->map.regex = ngx_pcalloc(cf->pool, sizeof(ngx_queue_t));
-    if (gateway_conf->map.regex == NULL)
+    router->map.regex = ngx_pcalloc(pool, sizeof(ngx_queue_t));
+    if (router->map.regex == NULL)
         return NGX_ERROR;
 
-    ngx_queue_init(gateway_conf->map.regex);
+    ngx_queue_init(router->map.regex);
 
     return NGX_OK;
 }
@@ -40,14 +42,14 @@ ngx_api_gateway_router_init_conf(ngx_conf_t *cf,
 static ngx_int_t
 ngx_api_gateway_router_check_var(ngx_str_t var, ngx_array_t a)
 {
-    ngx_uint_t                    j;
-    ngx_http_api_gateway_conf_t  *gateway_conf;
+    ngx_uint_t                      j;
+    ngx_http_api_gateway_router_t  *router;
 
-    gateway_conf = a.elts;
+    router = a.elts;
     
     for (j = 0; j < a.nelts; j++) {
-        if (ngx_memn2cmp(gateway_conf[j].var.data, var.data,
-                         gateway_conf[j].var.len, var.len) == 0)
+        if (ngx_memn2cmp(router[j].var.data, var.data,
+                         router[j].var.len, var.len) == 0)
             return NGX_ERROR;
     }
 
@@ -62,7 +64,7 @@ ngx_api_gateway_router(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_str_t                        *value, *s, var;
     ngx_uint_t                        j;
     ngx_conf_post_t                  *post = cmd->post;
-    ngx_http_api_gateway_conf_t      *gateway_conf, **p_gateway_conf;
+    ngx_http_api_gateway_router_t    *router, **router_ptr;
     ngx_api_gateway_main_conf_t      *amcf;
 
     amcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_api_gateway_module);
@@ -85,44 +87,60 @@ ngx_api_gateway_router(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
-    gateway_conf = ngx_array_push(&alcf->entries);
-    if (gateway_conf == NULL
-        || ngx_api_gateway_router_init_conf(cf, gateway_conf) == NGX_ERROR) {
+    router = ngx_array_push(&alcf->entries);
+    if (router == NULL
+        || ngx_api_gateway_router_init_conf(cf, amcf->pool, router)
+            == NGX_ERROR) {
         ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "no memory");
         return NGX_CONF_ERROR;
     }
 
-    gateway_conf->var = var;
+    router->var = var;
 
     for (j = 2; j < cf->args->nelts; j++) {
-        s = ngx_array_push(&gateway_conf->backends);
+        s = ngx_array_push(&router->backends);
         if (s == NULL)
             return NGX_CONF_ERROR;
         *s = value[j];
     }
 
-    p_gateway_conf = ngx_array_push(&amcf->routers);
-    if (p_gateway_conf == NULL) {
+    router_ptr = ngx_array_push(&amcf->routers);
+    if (router_ptr == NULL) {
         ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "no memory");
         return NGX_CONF_ERROR;
     }
 
-    *p_gateway_conf = gateway_conf;
+    *router_ptr = router;
 
-    return post->post_handler(cf, gateway_conf, conf);
+    return post->post_handler(cf, router, conf);
 }
 
 
 ngx_int_t
 ngx_api_gateway_router_build(ngx_cycle_t *cycle, ngx_pool_t *pool,
-    ngx_http_api_gateway_mapping_t *m, ngx_str_t backend,
+    ngx_http_api_gateway_router_t *router, ngx_str_t backend,
     ngx_template_seq_t entries)
 {
-    ngx_mapping_regex_t  *regex;
-    ngx_uint_t            j;
-    ngx_str_t             path;
-    ngx_regex_compile_t   rc;
-    u_char                errstr[NGX_MAX_CONF_ERRSTR];
+    ngx_mapping_regex_t            *regex;
+    ngx_uint_t                      j;
+    ngx_str_t                       path;
+    ngx_regex_compile_t             rc;
+    u_char                          errstr[NGX_MAX_CONF_ERRSTR];
+    ngx_http_api_gateway_mapping_t  map;
+
+    map.trie = ngx_trie_create(pool);
+    if (map.trie == NULL)
+        return NGX_ERROR;
+
+    map.regex = ngx_pcalloc(pool, sizeof(ngx_queue_t));
+    if (map.regex == NULL)
+        return NGX_ERROR;
+
+    if (router->zone == NULL)
+        if (ngx_trie_init(map.trie) == NGX_ERROR)
+            return NGX_ERROR;
+
+    ngx_queue_init(map.regex);
 
     for (j = 0; j < entries.nelts; j++) {
 
@@ -130,7 +148,7 @@ ngx_api_gateway_router_build(ngx_cycle_t *cycle, ngx_pool_t *pool,
 
         if (path.data[0] != '~') {
 
-            if (ngx_trie_set(m->trie, path, backend) == NGX_ERROR)
+            if (ngx_trie_set(map.trie, path, backend) == NGX_ERROR)
                 goto nomem;
 
             continue;
@@ -173,8 +191,11 @@ ngx_api_gateway_router_build(ngx_cycle_t *cycle, ngx_pool_t *pool,
 
         regex->re = rc.regex;
 
-        ngx_queue_insert_tail(m->regex, &regex->queue);
+        ngx_queue_insert_tail(map.regex, &regex->queue);
     }
+
+    router->map.trie = map.trie;
+    router->map.regex = map.regex;
 
     return NGX_OK;
 
@@ -186,30 +207,34 @@ nomem:
 
 
 ngx_int_t
-ngx_api_gateway_router_init(ngx_http_api_gateway_conf_t *gateway_conf,
+ngx_api_gateway_router_shm_init(ngx_http_api_gateway_router_t *router,
     ngx_http_api_gateway_shctx_t *sh)
 {
-    ngx_mapping_regex_t     *regex, *regex_shm;
-    ngx_queue_t             *q;
-    ngx_regex_shm_compile_t  rc;
-    u_char                   errstr[NGX_MAX_CONF_ERRSTR];
+    ngx_mapping_regex_t            *regex, *regex_shm;
+    ngx_queue_t                    *q;
+    ngx_regex_shm_compile_t         rc;
+    u_char                          errstr[NGX_MAX_CONF_ERRSTR];
+    ngx_http_api_gateway_mapping_t  next, old;
 
-    sh->map.lock = ngx_slab_calloc(sh->slab, sizeof(ngx_atomic_t));
-    if (sh->map.lock == NULL)
+    if (sh->map.lock == NULL) {
+
+        sh->map.lock = ngx_slab_calloc(sh->slab, sizeof(ngx_atomic_t));
+        if (sh->map.lock == NULL)
+            goto nomem;
+    }
+
+    next.trie = ngx_trie_shm_init(router->map.trie, sh->slab);
+    if (next.trie == NULL)
         goto nomem;
 
-    sh->map.trie = ngx_trie_shm_init(gateway_conf->map.trie, sh->slab);
-    if (sh->map.trie == NULL)
+    next.regex = ngx_slab_alloc(sh->slab, sizeof(ngx_queue_t));
+    if (next.regex == NULL)
         goto nomem;
 
-    sh->map.regex = ngx_slab_alloc(sh->slab, sizeof(ngx_queue_t));
-    if (sh->map.regex == NULL)
-        goto nomem;
+    ngx_queue_init(next.regex);
 
-    ngx_queue_init(sh->map.regex);
-
-    for (q = ngx_queue_head(gateway_conf->map.regex);
-         q != ngx_queue_sentinel(gateway_conf->map.regex);
+    for (q = ngx_queue_head(router->map.regex);
+         q != ngx_queue_sentinel(router->map.regex);
          q = ngx_queue_next(q))
     {
         regex = ngx_queue_data(q, ngx_mapping_regex_t, queue);
@@ -247,9 +272,38 @@ ngx_api_gateway_router_init(ngx_http_api_gateway_conf_t *gateway_conf,
 
         regex_shm->backend.len = regex->backend.len;
         regex_shm->pattern.len = regex->pattern.len;
-        regex_shm->re = regex->re;
+        regex_shm->re = rc.regex;
 
-        ngx_queue_insert_tail(sh->map.regex, &regex_shm->queue);
+        ngx_queue_insert_tail(next.regex, &regex_shm->queue);
+    }
+
+    ngx_rwlock_wlock(sh->map.lock);
+
+    old = sh->map;
+
+    sh->map.trie = next.trie;
+    sh->map.regex = next.regex;
+
+    ngx_rwlock_unlock(sh->map.lock);
+
+    ngx_trie_destroy(old.trie);
+
+    if (old.regex != NULL) {
+
+        for (q = ngx_queue_head(old.regex);
+             q != ngx_queue_sentinel(old.regex);
+             q = ngx_queue_next(q)) {
+
+            regex_shm = ngx_queue_data(q, ngx_mapping_regex_t, queue);
+
+            ngx_slab_free(sh->slab, regex_shm->backend.data);
+            ngx_slab_free(sh->slab, regex_shm->pattern.data);
+            ngx_slab_free(sh->slab, regex_shm->re->code);
+            ngx_slab_free(sh->slab, regex_shm->re);
+            ngx_slab_free(sh->slab, regex_shm);
+        }
+
+        ngx_slab_free(sh->slab, old.regex);
     }
 
     return NGX_OK;

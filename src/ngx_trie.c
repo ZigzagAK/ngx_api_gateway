@@ -6,17 +6,17 @@
 
 
 ngx_trie_t *
-ngx_trie_create(ngx_conf_t *cf)
+ngx_trie_create(ngx_pool_t *pool)
 {
     ngx_trie_t  *trie;
 
-    trie = ngx_pcalloc(cf->pool, sizeof(ngx_trie_t));
+    trie = ngx_pcalloc(pool, sizeof(ngx_trie_t));
     if (trie == NULL)
         return NULL;
 
-    trie->pool = cf->pool;
+    trie->pool = pool;
 
-    if (ngx_array_init(&trie->data, cf->pool, 1000, sizeof(ngx_keyval_t))
+    if (ngx_array_init(&trie->data, pool, 1000, sizeof(ngx_keyval_t))
             == NGX_ERROR)
         return NULL;
 
@@ -100,7 +100,8 @@ ngx_trie_shm_init(ngx_trie_t *trie, ngx_slab_pool_t *slab)
     if (shtrie == NULL)
         return NULL;
 
-    shtrie->data = trie->data;
+    if (trie != NULL)
+        shtrie->data = trie->data;
     shtrie->slab = slab;
 
     if (ngx_trie_init(shtrie) == NGX_ERROR)
@@ -137,6 +138,8 @@ ngx_trie_insert_node(ngx_trie_t *trie, ngx_trie_node_t *parent, ngx_str_t word)
     next = ngx_trie_alloc(trie, sizeof(ngx_trie_node_t));
     if (next == NULL)
         return NULL;
+
+    ngx_memzero(next, sizeof(ngx_trie_node_t));
 
     next->word.str = ngx_trie_dupstr(trie, word);
     if (next->word.str.data == NULL)
@@ -360,8 +363,18 @@ again:
 void
 ngx_trie_destroy(ngx_trie_t *trie)
 {
-    ngx_trie_free_node(trie, &trie->root);
-    ngx_trie_free(trie, trie);
+    if (trie != NULL) {
+        ngx_trie_free_node(trie, &trie->root);
+        ngx_trie_free(trie, trie);
+    }
+}
+
+
+void
+ngx_trie_clear(ngx_trie_t *trie)
+{
+    if (trie != NULL)
+        ngx_trie_free_node(trie, &trie->root);
 }
 
 

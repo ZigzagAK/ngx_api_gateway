@@ -78,14 +78,18 @@ ngx_module_t ngx_stream_api_gateway_module = {
 
 
 static void
-ngx_stream_api_gateway_handler(ngx_event_t *ev)
+ngx_stream_api_gateway_handler_sync(ngx_event_t *ev)
 {
     ngx_api_gateway_main_conf_t  *amcf;
+
     amcf = ngx_stream_cycle_get_module_main_conf(ngx_cycle,
-            ngx_stream_api_gateway_module);
+        ngx_stream_api_gateway_module);
+
     if (ngx_quit || ngx_terminate || ngx_exiting)
         return;
-    ngx_api_gateway_fetch_keys(amcf);
+
+    ngx_api_gateway_sync(amcf);
+
     ngx_add_timer(ev, amcf->interval);
 }
 
@@ -115,7 +119,7 @@ ngx_stream_api_gateway_init_worker(ngx_cycle_t *cycle)
 
     ev->log = cycle->log;
     ev->data = &c;
-    ev->handler = ngx_stream_api_gateway_handler;
+    ev->handler = ngx_stream_api_gateway_handler_sync;
 
     ngx_add_timer(ev, 0);
 

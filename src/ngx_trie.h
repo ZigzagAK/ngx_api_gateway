@@ -31,7 +31,7 @@ typedef struct {
 } ngx_trie_t;
 
 
-ngx_trie_t * ngx_trie_create(ngx_conf_t *cf);
+ngx_trie_t * ngx_trie_create(ngx_pool_t *pool);
 
 ngx_int_t ngx_trie_init(ngx_trie_t *trie);
 
@@ -45,6 +45,8 @@ ngx_int_t ngx_trie_find(ngx_trie_t *trie, ngx_str_t *path,
     ngx_keyval_t *retval);
 
 void ngx_trie_destroy(ngx_trie_t *trie);
+
+void ngx_trie_clear(ngx_trie_t *trie);
 
 void ngx_trie_swap(ngx_trie_t *l, ngx_trie_t *r);
 

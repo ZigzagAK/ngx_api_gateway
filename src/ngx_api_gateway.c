@@ -40,21 +40,28 @@ ngx_api_gateway_create_main_conf(ngx_conf_t *cf)
         return NULL;
 
     if (ngx_array_init(&amcf->routers, cf->cycle->pool, 10,
-                       sizeof(ngx_http_api_gateway_conf_t *)) == NGX_ERROR)
+                       sizeof(ngx_http_api_gateway_router_t *)) == NGX_ERROR)
+        return NULL;
+
+    if (ngx_array_init(&amcf->backends, cf->cycle->pool, 100,
+                       sizeof(ngx_str_t)) == NGX_ERROR)
         return NULL;
 
     amcf->interval = NGX_CONF_UNSET_MSEC;
     amcf->timeout = NGX_CONF_UNSET_MSEC;
     amcf->request_path_index = NGX_ERROR;
     amcf->cycle = cf->cycle;
+    amcf->pool = ngx_create_pool(1024, cf->cycle->log);
+    if (amcf->pool == NULL)
+        return NULL;
 
     return amcf;
 }
 
 
 static ngx_int_t
-ngx_api_gateway_create_mappings(ngx_conf_t *cf,
-    ngx_http_api_gateway_conf_t *gateway_conf)
+ngx_api_gateway_create_mappings(ngx_cycle_t *cycle,
+    ngx_http_api_gateway_router_t *router, ngx_pool_t *pool)
 {
     ngx_template_conf_t  *conf;
     ngx_template_seq_t   *seq;
@@ -63,18 +70,19 @@ ngx_api_gateway_create_mappings(ngx_conf_t *cf,
 
     static ngx_str_t api = ngx_string("api");
 
-    if (gateway_conf->zone == NULL) {
-        if (ngx_trie_init(gateway_conf->map.trie) == NGX_ERROR)
-            return NGX_ERROR;
-    }
+    ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "rebuild routes for var=$%V",
+            &router->var);
 
-    backend = gateway_conf->backends.elts;
+    backend = router->backends.elts;
 
-    for (j = 0; j < gateway_conf->backends.nelts; j++) {
+    for (j = 0; j < router->backends.nelts; j++) {
 
-        conf = ngx_template_lookup_by_name(cf->cycle, backend[j]);
+        conf = ngx_template_lookup_by_name(cycle, backend[j]);
         if (conf == NULL)
             continue;
+
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                "rebuild routes for backend=%V", &conf->name);
 
         seq = conf->seqs.elts;
 
@@ -84,31 +92,84 @@ ngx_api_gateway_create_mappings(ngx_conf_t *cf,
                              seq[i].key.len, api.len) != 0)
                 continue;
 
-            if (ngx_api_gateway_router_build(cf->cycle, cf->pool,
-                    &gateway_conf->map, conf->name, seq[i]) == NGX_ERROR)
+            if (ngx_api_gateway_router_build(cycle, pool,
+                    router, conf->name, seq[i]) == NGX_ERROR)
                 return NGX_ERROR;
         }
     }
-    
+
     return NGX_OK;
 }
 
 
+static ngx_int_t
+ngx_api_gateway_collect(ngx_template_t *t, void *data)
+{
+    ngx_api_gateway_main_conf_t  *amcf = data;
+    ngx_template_conf_t          *conf;
+    ngx_uint_t                    j, i, k;
+    ngx_template_seq_t           *seq;
+    ngx_str_t                    *backend;
+
+    for (i = 0; i < t->entries.nelts; i++) {
+
+        conf = (ngx_template_conf_t *)
+                ((u_char *) t->entries.elts + i * t->entries.size);
+
+        seq = conf->seqs.elts;
+
+        for (j = 0; j < conf->seqs.nelts; j++) {
+
+            if (!ngx_eqstr(seq[j].key, "backends"))
+                continue;
+
+            for (k = 0; k < seq[j].nelts; k++) {
+
+                backend = ngx_array_push(&amcf->backends);
+                if (backend == NULL)
+                    goto nomem;
+                
+                *backend = ngx_strdup(amcf->cycle->pool, seq[j].elts[k].data,
+                                      seq[j].elts[k].len);
+                if (backend->data == NULL)
+                    goto nomem;
+            }
+        }
+    }
+
+    return NGX_OK;
+
+nomem:
+
+    ngx_log_error(NGX_LOG_NOTICE, amcf->cycle->log, 0, "no memory");
+    return NGX_ERROR;
+}
+
 char *
 ngx_api_gateway_init_main_conf(ngx_conf_t *cf, void *conf)
 {
-    ngx_api_gateway_main_conf_t    *amcf = conf;
-    ngx_http_api_gateway_conf_t  **gateway_conf;
-    ngx_uint_t                     j;
+    ngx_api_gateway_main_conf_t     *amcf = conf;
+    ngx_http_api_gateway_router_t  **router;
+    ngx_uint_t                       j;
 
     ngx_conf_init_msec_value(amcf->interval, DEFAULT_INTERVAL);
     ngx_conf_init_msec_value(amcf->timeout, DEFAULT_TIMEOUT);
 
-    gateway_conf = amcf->routers.elts;
+    router = amcf->routers.elts;
 
-    for (j = 0; j < amcf->routers.nelts; j++)
-        if (ngx_api_gateway_create_mappings(cf, gateway_conf[j]) == NGX_ERROR)
+    if (ngx_template_scan(cf->cycle, ngx_api_gateway_collect, amcf)
+            == NGX_ERROR)
+        return NGX_CONF_ERROR;
+
+    for (j = 0; j < amcf->routers.nelts; j++) {
+
+        if (router[j]->backends.nelts == 0)
+            router[j]->backends = amcf->backends;
+
+        if (ngx_api_gateway_create_mappings(cf->cycle, router[j],
+                amcf->pool) == NGX_ERROR)
             return NGX_CONF_ERROR;
+    }
 
     return NGX_CONF_OK;
 }
@@ -236,11 +297,12 @@ ngx_api_gateway_fetch_handler(ngx_int_t rc,
     t.template = ctx->t->t.template;
     t.filename = ctx->t->t.filename;
     t.pfkey = ngx_api_gateway_handle_key;
+    t.pool = ctx->temp_pool;
 
-    ngx_array_init(&t.entries, ctx->temp_pool, 10, sizeof(ngx_template_conf_t));
+    ngx_array_init(&t.entries, t.pool, 10, sizeof(ngx_template_conf_t));
 
     f = fmemopen(body->data, body->len, "r");
-    rc = ngx_template_conf_parse_yaml(cycle, ctx->temp_pool, f, &t);
+    rc = ngx_template_conf_parse_yaml(cycle, f, &t);
     fclose(f);
 
     if (rc != NGX_OK)
@@ -317,13 +379,13 @@ ngx_api_gateway_fetch_gw(ngx_cycle_t *cycle, ngx_api_gateway_template_t *t,
 
     pool = ngx_create_pool(1024, ngx_cycle->log);
     if (pool == NULL) {
-        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0, "no memory");
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0, "no memory");
         return;
     }
 
     ctx = ngx_pcalloc(pool, sizeof(context_t));
     if (ctx == NULL) {
-        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0, "no memory");
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0, "no memory");
         return;
     }
 
@@ -349,7 +411,48 @@ ngx_api_gateway_fetch(ngx_cycle_t *cycle, ngx_array_t a, ngx_msec_t timeout)
 
 
 void
-ngx_api_gateway_fetch_keys(ngx_api_gateway_main_conf_t *amcf)
+ngx_api_gateway_sync(ngx_api_gateway_main_conf_t *amcf)
 {
     ngx_api_gateway_fetch(amcf->cycle, amcf->templates, amcf->timeout);
+}
+
+
+void
+ngx_api_gateway_update(ngx_template_main_conf_t *tmcf,
+    ngx_api_gateway_main_conf_t *amcf)
+{
+    ngx_http_api_gateway_router_t  **router;
+    ngx_uint_t                       j;
+    ngx_pool_t                      *pool;
+
+    if (!tmcf->changed)
+        return;
+
+    router = amcf->routers.elts;
+
+    pool = ngx_create_pool(1024, amcf->cycle->log);
+    if (pool == NULL) {
+        ngx_log_error(NGX_LOG_ERR, amcf->cycle->log, 0, "no memory");
+        return;
+    }
+
+    for (j = 0; j < amcf->routers.nelts; j++) {
+
+        if (ngx_api_gateway_create_mappings(amcf->cycle, router[j], pool)
+                == NGX_ERROR)
+            continue;
+
+        if (router[j]->sh == NULL)
+            continue;
+
+        if (ngx_worker != 0)
+            continue;
+
+        ngx_api_gateway_router_shm_init(router[j], router[j]->sh);
+    }
+
+    ngx_destroy_pool(amcf->pool);
+    amcf->pool = pool;
+
+    tmcf->changed = 0;
 }

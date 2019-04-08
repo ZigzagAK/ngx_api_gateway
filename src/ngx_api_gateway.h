@@ -27,6 +27,9 @@ typedef struct {
     ngx_msec_t    interval;
     ngx_int_t     request_path_index;
     ngx_cycle_t  *cycle;
+    ngx_pool_t   *pool;
+    ngx_uint_t    generation;
+    ngx_array_t   backends;
 } ngx_api_gateway_main_conf_t;
 
 
@@ -40,8 +43,10 @@ char * ngx_api_gateway_template_directive(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 
 
-void ngx_api_gateway_fetch_keys(ngx_api_gateway_main_conf_t *amcf);
+void ngx_api_gateway_sync(ngx_api_gateway_main_conf_t *amcf);
 
+void ngx_api_gateway_update(ngx_template_main_conf_t *tmcf,
+    ngx_api_gateway_main_conf_t *amcf);
 
 #endif /* NGX_API_GATEWAY_H */
 

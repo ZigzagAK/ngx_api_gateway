@@ -15,7 +15,8 @@ server {
 
         {{location.directives|default()}}
 
-        api_gateway_router $backend {{backends}};
+        api_gateway_router $backend:10m {{backends}};
+        api_gateway_router $all_backends:10m;
 
         proxy_connect_timeout {{proxy.connect_timeout}};
         proxy_read_timeout {{proxy.read_timeout}};
