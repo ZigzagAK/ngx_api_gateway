@@ -121,15 +121,17 @@ concat_path(ngx_pool_t *pool, ngx_str_t *path, ngx_int_t n)
 ngx_str_t
 ngx_strdup(ngx_pool_t *pool, u_char *s, size_t len)
 {
-    ngx_str_t  dst;
+    ngx_str_t  retval = ngx_null_string;
 
-    dst.data = ngx_palloc(pool, len + 1);
-    if (dst.data)
-        ngx_memcpy(dst.data, s, len);
-    dst.len = len;
-    dst.data[dst.len] = 0;
+    retval.data = ngx_palloc(pool, len + 1);
 
-    return dst;
+    if (retval.data) {
+        ngx_memcpy(retval.data, s, len);
+        retval.len = len;
+        retval.data[retval.len] = 0;
+    }
+
+    return retval;
 }
 
 
@@ -220,14 +222,11 @@ transform(ngx_cycle_t *cycle, ngx_pool_t *pool, ngx_template_conf_t *conf,
 
 
 static ngx_str_t
-lookup_key(ngx_cycle_t *cycle, ngx_pool_t *pool, ngx_template_conf_t *conf,
-    ngx_str_t key)
+lookup_key(ngx_cycle_t *cycle, ngx_template_conf_t *conf, ngx_str_t key)
 {
     ngx_str_t         rv = { 0, NULL };
     ngx_uint_t        j;
     static ngx_str_t  null = ngx_null_string;
-
-    key = ngx_strdup(pool, key.data, key.len);
 
     for (j = 0; j < conf->nkeys; j++) {
         if (ngx_memn2cmp(conf->keys[j].key.data, key.data,
@@ -239,7 +238,7 @@ lookup_key(ngx_cycle_t *cycle, ngx_pool_t *pool, ngx_template_conf_t *conf,
 
     if (rv.data == NULL)
         // global search
-        lookup(cycle, pool, key, &rv);
+        lookup(cycle, key, &rv);
 
     if (rv.data == NULL)
         // no value
@@ -272,7 +271,6 @@ unescape(ngx_str_t *s)
         if (*c == '\\' && *(c + 1) == 'n') {
             *c = LF;
             ngx_memmove(c + 1, c + 2, s->data + s->len-- - c - 1);
-            
         }
     }
 }
@@ -284,7 +282,7 @@ transform(ngx_cycle_t *cycle, ngx_pool_t *pool, ngx_template_conf_t *conf,
 {
     ngx_chain_t   start, *out;
     ngx_str_t     key, val, s;
-    u_char       *c1, *c2;
+    u_char       *c1, *c2, *end = template.data + template.len;
     ngx_int_t     undefined = 0;
     ngx_keyval_t  k;
 
@@ -294,9 +292,9 @@ transform(ngx_cycle_t *cycle, ngx_pool_t *pool, ngx_template_conf_t *conf,
     out->buf = NULL;
     out->next = NULL;
 
-    for (c1 = (u_char *) ngx_strstr(c2, "{{");
+    for (c1 = (u_char *) ngx_strnstr(c2, "{{", end - c2);
          c1 != NULL;
-         c1 = (u_char *) ngx_strstr(c2, "{{")) {
+         c1 = (u_char *) ngx_strnstr(c2, "{{", end - c2)) {
 
         out->next = new_chain(pool, c1 - c2 + 2);
         if (out->next == NULL)
@@ -304,7 +302,7 @@ transform(ngx_cycle_t *cycle, ngx_pool_t *pool, ngx_template_conf_t *conf,
 
         out->next->buf->last = ngx_cpymem(out->next->buf->last, c2, c1 - c2);
 
-        c2 = (u_char *) ngx_strstr(c1, "}}");
+        c2 = (u_char *) ngx_strnstr(c1, "}}", end - c1);
         if (c2 == NULL) {
             out->next->buf->last = ngx_sprintf(out->next->buf->last, "{{");
             c2 = c1 + 2;
@@ -324,7 +322,7 @@ transform(ngx_cycle_t *cycle, ngx_pool_t *pool, ngx_template_conf_t *conf,
         do {
             k = ngx_split(k.key, '|');
             ngx_trim(&k.key);
-            val = lookup_key(cycle, pool, conf, k.key);
+            val = lookup_key(cycle, conf, k.key);
             if (val.data != NULL)
                 val = transform(cycle, pool, conf, val);
             k.key = k.value;
@@ -1326,7 +1324,7 @@ split_key(ngx_str_t key)
 
 
 ngx_int_t
-lookup(ngx_cycle_t *cycle, ngx_pool_t *pool, ngx_str_t key, ngx_str_t *retval)
+lookup(ngx_cycle_t *cycle, ngx_str_t key, ngx_str_t *retval)
 {
     ngx_template_main_conf_t  *tmcf;
     ngx_template_t            *t;
@@ -1356,7 +1354,7 @@ lookup(ngx_cycle_t *cycle, ngx_pool_t *pool, ngx_str_t key, ngx_str_t *retval)
                 if (ngx_memn2cmp(opts.name.data, conf->name.data,
                                  opts.name.len, conf->name.len) == 0) {
 
-                    *retval = lookup_key(cycle, pool, conf, opts.key);
+                    *retval = lookup_key(cycle, conf, opts.key);
                     if (retval->data != NULL)
                         return NGX_OK;
 

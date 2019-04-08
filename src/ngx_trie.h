@@ -39,11 +39,11 @@ ngx_int_t ngx_trie_set(ngx_trie_t *trie, ngx_str_t path, ngx_str_t value);
 
 ngx_int_t ngx_trie_delete(ngx_trie_t *trie, ngx_str_t path);
 
-ngx_int_t ngx_trie_find(ngx_trie_t *trie, ngx_str_t *path, ngx_keyval_t *retval,
-    ngx_pool_t *temp_pool);
+ngx_int_t ngx_trie_find(ngx_trie_t *trie, ngx_str_t *path,
+    ngx_keyval_t *retval);
 
 void ngx_trie_free(ngx_trie_t *trie);
 
-ngx_trie_t * ngx_trie_swap(ngx_trie_t *dst, ngx_trie_t *src);
+void ngx_trie_swap(ngx_trie_t *l, ngx_trie_t *r);
 
 #endif /* NGX_TRIE_H */

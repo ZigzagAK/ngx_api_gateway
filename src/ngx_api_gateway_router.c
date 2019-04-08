@@ -9,23 +9,44 @@
 #include <ngx_http.h>
 
 
+extern ngx_str_t ngx_strdup(ngx_pool_t *pool, u_char *s, size_t len);
+
+
 ngx_int_t
 ngx_api_gateway_router_init_conf(ngx_conf_t *cf,
-    ngx_http_api_gateway_conf_t *conf)
+    ngx_http_api_gateway_conf_t *gateway_conf)
 {
-    if (NGX_ERROR == ngx_array_init(&conf->backends, cf->pool,
+    if (NGX_ERROR == ngx_array_init(&gateway_conf->backends, cf->pool,
                                     10, sizeof(ngx_str_t)))
         return NGX_ERROR;
 
-    conf->map.trie = ngx_trie_create(cf);
-    if (conf->map.trie == NULL)
+    gateway_conf->map.trie = ngx_trie_create(cf);
+    if (gateway_conf->map.trie == NULL)
         return NGX_ERROR;
 
-    conf->map.regex = ngx_pcalloc(cf->pool, sizeof(ngx_queue_t));
-    if (conf->map.regex == NULL)
+    gateway_conf->map.regex = ngx_pcalloc(cf->pool, sizeof(ngx_queue_t));
+    if (gateway_conf->map.regex == NULL)
         return NGX_ERROR;
+
+    ngx_queue_init(gateway_conf->map.regex);
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_api_gateway_router_check_var(ngx_str_t var, ngx_array_t a)
+{
+    ngx_uint_t                    j;
+    ngx_http_api_gateway_conf_t  *gateway_conf;
+
+    gateway_conf = a.elts;
     
-    ngx_queue_init(conf->map.regex);
+    for (j = 0; j < a.nelts; j++) {
+        if (ngx_memn2cmp(gateway_conf[j].var.data, var.data,
+                         gateway_conf[j].var.len, var.len) == 0)
+            return NGX_ERROR;
+    }
 
     return NGX_OK;
 }
@@ -34,30 +55,38 @@ ngx_api_gateway_router_init_conf(ngx_conf_t *cf,
 char *
 ngx_api_gateway_router(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
-    ngx_http_api_gateway_loc_conf_t  *glcf = conf;
-    ngx_str_t                        *value, *s;
+    ngx_http_api_gateway_loc_conf_t  *alcf = conf;
+    ngx_str_t                        *value, *s, var;
     ngx_uint_t                        j;
     ngx_conf_post_t                  *post = cmd->post;
     ngx_http_api_gateway_conf_t      *gateway_conf;
 
-    gateway_conf = ngx_array_push(&glcf->entries);
+    value = cf->args->elts;
+
+    var = value[1];
+    if (var.data[0] != '$') {
+        ngx_conf_log_error(NGX_LOG_ERR, cf, 0,
+                "required '$' as variable prefix");
+        return NGX_CONF_ERROR;
+    }
+
+    var.data++;
+    var.len--;
+
+    if (ngx_api_gateway_router_check_var(var, alcf->entries) == NGX_ERROR) {
+        ngx_conf_log_error(NGX_LOG_ERR, cf, 0,
+                "duplicate location router variable '$%V'", &var);
+        return NGX_CONF_ERROR;
+    }
+
+    gateway_conf = ngx_array_push(&alcf->entries);
     if (gateway_conf == NULL
         || ngx_api_gateway_router_init_conf(cf, gateway_conf) == NGX_ERROR) {
         ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "no memory");
         return NGX_CONF_ERROR;
     }
 
-    value = cf->args->elts;
-
-    gateway_conf->var = value[1];
-    if (gateway_conf->var.data[0] != '$') {
-        ngx_conf_log_error(NGX_LOG_ERR, cf, 0,
-                "required '$' as variable prefix");
-        return NGX_CONF_ERROR;
-    }
-
-    gateway_conf->var.data++;
-    gateway_conf->var.len--;
+    gateway_conf->var = var;
 
     for (j = 2; j < cf->args->nelts; j++) {
         s = ngx_array_push(&gateway_conf->backends);
@@ -143,7 +172,7 @@ nomem:
 
 
 ngx_int_t
-ngx_api_gateway_router_init(ngx_http_api_gateway_conf_t *conf,
+ngx_api_gateway_router_init(ngx_http_api_gateway_conf_t *gateway_conf,
     ngx_http_api_gateway_shctx_t *sh)
 {
     ngx_mapping_regex_t     *regex, *regex_shm;
@@ -151,9 +180,13 @@ ngx_api_gateway_router_init(ngx_http_api_gateway_conf_t *conf,
     ngx_regex_shm_compile_t  rc;
     u_char                   errstr[NGX_MAX_CONF_ERRSTR];
 
-    sh->map.trie = ngx_trie_shm_init(conf->map.trie, sh->slab);
+    sh->map.lock = ngx_slab_calloc(sh->slab, sizeof(ngx_atomic_t));
+    if (sh->map.lock == NULL)
+        goto nomem;
+
+    sh->map.trie = ngx_trie_shm_init(gateway_conf->map.trie, sh->slab);
     if (sh->map.trie == NULL)
-        return NGX_ERROR;
+        goto nomem;
 
     sh->map.regex = ngx_slab_alloc(sh->slab, sizeof(ngx_queue_t));
     if (sh->map.regex == NULL)
@@ -161,8 +194,8 @@ ngx_api_gateway_router_init(ngx_http_api_gateway_conf_t *conf,
 
     ngx_queue_init(sh->map.regex);
 
-    for (q = ngx_queue_head(conf->map.regex);
-         q != ngx_queue_sentinel(conf->map.regex);
+    for (q = ngx_queue_head(gateway_conf->map.regex);
+         q != ngx_queue_sentinel(gateway_conf->map.regex);
          q = ngx_queue_next(q))
     {
         regex = ngx_queue_data(q, ngx_mapping_regex_t, queue);
@@ -215,22 +248,6 @@ nomem:
 }
 
 
-ngx_inline void
-ngx_rwlock_safe_rlock(ngx_atomic_t *lock)
-{
-    if (lock != NULL)
-        ngx_rwlock_rlock(lock);
-}
-
-
-ngx_inline void
-ngx_rwlock_safe_unlock(ngx_atomic_t *lock)
-{
-    if (lock != NULL)
-        ngx_rwlock_unlock(lock);
-}
-
-
 ngx_int_t
 ngx_api_gateway_router_match(ngx_pool_t *temp_pool,
     ngx_http_api_gateway_mapping_t *m,
@@ -239,29 +256,25 @@ ngx_api_gateway_router_match(ngx_pool_t *temp_pool,
     ngx_mapping_regex_t  *regex;
     ngx_queue_t          *q;
     int                   captures[3];
-    ngx_keyval_t          retval;
+    ngx_keyval_t          retval = { ngx_null_string, ngx_null_string };
 
-    ngx_rwlock_safe_rlock(m->lock);
+    ngx_str_null(path);
+    ngx_str_null(upstream);
 
-    switch (ngx_trie_find(m->trie, uri, &retval, temp_pool)) {
+    if (m->lock != NULL)
+        ngx_rwlock_rlock(m->lock);
+
+    switch (ngx_trie_find(m->trie, uri, &retval)) {
 
         case NGX_OK:
-
-            *path = retval.key;
-            *upstream = retval.value;
-
-            ngx_rwlock_safe_unlock(m->lock);
-            return NGX_OK;
+            goto done;
 
         case NGX_DECLINED:
-
             break;
 
         case NGX_ERROR:
         default:
-
-            ngx_rwlock_safe_unlock(m->lock);
-            return NGX_ERROR;
+            goto done;
     }
 
     for (q = ngx_queue_head(m->regex);
@@ -272,15 +285,33 @@ ngx_api_gateway_router_match(ngx_pool_t *temp_pool,
 
         if (ngx_regex_exec(regex->re, uri, captures, 3) > 0) {
 
-            *path = regex->pattern;
-            *upstream = regex->backend;
+            retval.key = regex->pattern;
+            retval.value = regex->backend;
 
-            ngx_rwlock_safe_unlock(m->lock);
-            return NGX_OK;
+            break;
         }
     }
 
-    ngx_rwlock_safe_unlock(m->lock);
- 
-    return NGX_DECLINED;
+done:
+
+    if (retval.key.data != NULL) {
+
+        path->data = ngx_pstrdup(temp_pool, &retval.key);
+
+        if (path->data != NULL) {
+
+            upstream->data = ngx_pstrdup(temp_pool, &retval.value);
+
+            if (upstream->data != NULL) {
+
+                path->len = retval.key.len;
+                upstream->len = retval.value.len;
+            }
+        }
+    }
+
+    if (m->lock != NULL)
+        ngx_rwlock_unlock(m->lock);
+
+    return upstream->data != NULL ? NGX_OK : NGX_DECLINED;
 }

@@ -27,4 +27,3 @@ ngx_int_t ngx_regex_shm_compile(ngx_regex_shm_compile_t *rc);
 
 
 #endif /* NGX_REGEX_SHM_H */
-

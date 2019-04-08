@@ -1,10 +1,10 @@
 ngx_addon_name="ngx_template_module ngx_http_api_gateway_module ngx_stream_api_gateway_module"
 
-SRCS="$ngx_addon_dir/src/ngx_api_gateway.c         \
-      $ngx_addon_dir/src/ngx_trie.c                \
-      $ngx_addon_dir/src/ngx_http_api_gateway.c    \
-      $ngx_addon_dir/src/ngx_stream_api_gateway.c  \
-      $ngx_addon_dir/src/ngx_api_gateway_router.c  \
+SRCS="$ngx_addon_dir/src/ngx_api_gateway.c                \
+      $ngx_addon_dir/src/ngx_trie.c                       \
+      $ngx_addon_dir/src/ngx_http_api_gateway_module.c    \
+      $ngx_addon_dir/src/ngx_stream_api_gateway_module.c  \
+      $ngx_addon_dir/src/ngx_api_gateway_router.c         \
       $ngx_addon_dir/src/ngx_regex_shm.c"
 
 DEPS="$ngx_addon_dir/src/ngx_trie.h                \

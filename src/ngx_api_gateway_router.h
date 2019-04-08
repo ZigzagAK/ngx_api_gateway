@@ -49,10 +49,10 @@ typedef struct {
 
 ngx_int_t
 ngx_api_gateway_router_init_conf(ngx_conf_t *cf,
-    ngx_http_api_gateway_conf_t *conf);
+    ngx_http_api_gateway_conf_t *gateway_conf);
 
 ngx_int_t
-ngx_api_gateway_router_init(ngx_http_api_gateway_conf_t *conf,
+ngx_api_gateway_router_init(ngx_http_api_gateway_conf_t *gateway_conf,
     ngx_http_api_gateway_shctx_t *sh);
 
 char * ngx_api_gateway_router(ngx_conf_t *cf, ngx_command_t *cmd,

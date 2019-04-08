@@ -28,7 +28,7 @@ ngx_api_gateway_post_conf(ngx_conf_t *cf);
 
 
 static ngx_http_module_t ngx_http_api_gateway_ctx = {
-    ngx_api_gateway_pre_conf,     /* preconfiguration */
+    ngx_api_gateway_pre_conf,          /* preconfiguration */
     ngx_api_gateway_post_conf,         /* postconfiguration */
     ngx_api_gateway_create_main_conf,  /* create main configuration */
     ngx_api_gateway_init_main_conf,    /* init main configuration */
@@ -170,23 +170,23 @@ ngx_api_gateway_post_conf(ngx_conf_t *cf)
 static void *
 ngx_api_gateway_create_loc_conf(ngx_conf_t *cf)
 {
-    ngx_http_api_gateway_loc_conf_t  *glcf;
+    ngx_http_api_gateway_loc_conf_t  *alcf;
 
-    glcf = ngx_pcalloc(cf->pool, sizeof(ngx_http_api_gateway_loc_conf_t));
-    if (glcf == NULL)
+    alcf = ngx_pcalloc(cf->pool, sizeof(ngx_http_api_gateway_loc_conf_t));
+    if (alcf == NULL)
         return NULL;
 
-    if (NGX_ERROR == ngx_array_init(&glcf->entries, cf->pool,
+    if (NGX_ERROR == ngx_array_init(&alcf->entries, cf->pool,
                                     10, sizeof(ngx_http_api_gateway_conf_t)))
         return NULL;
 
-    return glcf;
+    return alcf;
 }
 
 
 static ngx_int_t
 ngx_api_gateway_create_mappings(ngx_conf_t *cf,
-    ngx_http_api_gateway_loc_conf_t *glcf)
+    ngx_http_api_gateway_loc_conf_t *alcf)
 {
     ngx_http_api_gateway_conf_t  *gateway_conf;
     ngx_template_conf_t          *conf;
@@ -196,9 +196,9 @@ ngx_api_gateway_create_mappings(ngx_conf_t *cf,
 
     static ngx_str_t api = ngx_string("api");
     
-    gateway_conf = glcf->entries.elts;
+    gateway_conf = alcf->entries.elts;
 
-    for (k = 0; k < glcf->entries.nelts; k++) {
+    for (k = 0; k < alcf->entries.nelts; k++) {
 
         if (gateway_conf[k].init)
             continue;
@@ -389,7 +389,7 @@ ngx_api_gateway_router_var(ngx_http_request_t *r,
 
 
 static ngx_int_t
-ngx_api_gateway_router_init_shtrie(ngx_shm_zone_t *zone, void *old);
+ngx_api_gateway_router_init_shm(ngx_shm_zone_t *zone, void *old);
 
 
 static char *
@@ -399,9 +399,10 @@ ngx_api_gateway_router_add_variable(ngx_conf_t *cf, void *data, void *conf)
     ngx_http_api_gateway_conf_t      *gateway_conf = data;
     ngx_http_variable_t              *var;
     ngx_keyval_t                      kv;
-    ssize_t                           shmsize;
+    ssize_t                           size;
     ngx_array_t                      *a;
     router_var_ctx_t                 *ctx;
+    ngx_str_t                         zone_name;
 
     kv = ngx_split(gateway_conf->var, ':');
 
@@ -432,11 +433,17 @@ ngx_api_gateway_router_add_variable(ngx_conf_t *cf, void *data, void *conf)
     if (kv.value.data == NULL)
         return NGX_CONF_OK;
 
-    shmsize = ngx_parse_size(&kv.value);
-    if (shmsize == NGX_ERROR)
+    size = ngx_parse_size(&kv.value);
+    if (size == NGX_ERROR)
         return NGX_CONF_ERROR; 
 
-    gateway_conf->zone = ngx_shared_memory_add(cf, &kv.key, shmsize,
+    zone_name.data = ngx_pcalloc(cf->pool, kv.key.len + 32);
+    if (zone_name.data == NULL)
+        return NGX_CONF_ERROR;
+    zone_name.len = ngx_sprintf(zone_name.data, "$%V(%0Xd)", &kv.key,
+            zone_name.data) - zone_name.data;
+
+    gateway_conf->zone = ngx_shared_memory_add(cf, &zone_name, size,
         &ngx_http_api_gateway_module);
 
     if (gateway_conf->zone == NULL)
@@ -444,14 +451,14 @@ ngx_api_gateway_router_add_variable(ngx_conf_t *cf, void *data, void *conf)
 
     gateway_conf->zone->noreuse = 1;
     gateway_conf->zone->data = gateway_conf;
-    gateway_conf->zone->init = ngx_api_gateway_router_init_shtrie;
+    gateway_conf->zone->init = ngx_api_gateway_router_init_shm;
 
     return NGX_CONF_OK;
 }
 
 
 static ngx_int_t
-ngx_api_gateway_router_init_shtrie(ngx_shm_zone_t *zone, void *old)
+ngx_api_gateway_router_init_shm(ngx_shm_zone_t *zone, void *old)
 {
     ngx_http_api_gateway_conf_t   *conf;
     ngx_http_api_gateway_shctx_t  *sh;

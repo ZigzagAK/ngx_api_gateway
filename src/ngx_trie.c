@@ -5,8 +5,6 @@
 #include "ngx_trie.h"
 
 
-extern ngx_str_t ngx_strdup(ngx_pool_t *pool, u_char *s, size_t len);
-
 ngx_trie_t *
 ngx_trie_create(ngx_conf_t *cf)
 {
@@ -27,17 +25,17 @@ ngx_trie_create(ngx_conf_t *cf)
 
 
 static void *
-ngx_trie_allocate(ngx_trie_t *trie, size_t size)
+ngx_trie_alloc(ngx_trie_t *trie, size_t size)
 {
     if (trie->slab != NULL)
-        return ngx_slab_calloc(trie->slab, size);
+        return ngx_slab_alloc(trie->slab, size);
 
-    return ngx_pcalloc(trie->pool, size);
+    return ngx_palloc(trie->pool, size);
 }
 
 
 static void
-ngx_trie_deallocate(ngx_trie_t *trie, void *p)
+ngx_trie_dealloc(ngx_trie_t *trie, void *p)
 {
     if (p == NULL)
         return;
@@ -61,7 +59,7 @@ ngx_trie_init(ngx_trie_t *trie)
     if (trie->root.next.root != NULL)
         return NGX_OK;
 
-    sentinel = ngx_trie_allocate(trie, sizeof(ngx_rbtree_node_t));
+    sentinel = ngx_trie_alloc(trie, sizeof(ngx_rbtree_node_t));
     if (sentinel == NULL)
         return NGX_ERROR;
 
@@ -122,13 +120,13 @@ ngx_trie_insert_node(ngx_trie_t *trie, ngx_rbtree_t *rbtree, ngx_str_t word)
     if (trie_node != NULL)
         return trie_node;
 
-    trie_node = ngx_trie_allocate(trie, sizeof(ngx_trie_node_t));
+    trie_node = ngx_trie_alloc(trie, sizeof(ngx_trie_node_t));
     if (trie_node == NULL)
         return NULL;
 
     trie_node->word.str = word;
 
-    sentinel = ngx_trie_allocate(trie, sizeof(ngx_rbtree_node_t));
+    sentinel = ngx_trie_alloc(trie, sizeof(ngx_rbtree_node_t));
     if (sentinel == NULL)
         return NULL;
 
@@ -156,7 +154,7 @@ split(ngx_trie_t *trie, ngx_str_t path, ngx_str_t *word, ngx_uint_t n)
                 return NGX_ERROR;
 
             word->len = c2 - c1;
-            word->data = ngx_trie_allocate(trie, word->len + 1);
+            word->data = ngx_trie_alloc(trie, word->len);
             if (word->data == NULL)
                 return NGX_ERROR;
             ngx_memcpy(word->data, c1, word->len);
@@ -177,7 +175,7 @@ static ngx_str_t
 ngx_trie_dupstr(ngx_trie_t *trie, ngx_str_t s)
 {
     ngx_str_t  dup = ngx_null_string;
-    dup.data = ngx_trie_allocate(trie, s.len + 1);
+    dup.data = ngx_trie_alloc(trie, s.len);
     if (dup.data == NULL)
         return dup;
     ngx_memcpy(dup.data, s.data, s.len);
@@ -233,7 +231,7 @@ ngx_trie_set(ngx_trie_t *trie, ngx_str_t path, ngx_str_t value)
 
             // free old value
 
-            ngx_trie_deallocate(trie, next->value.data);
+            ngx_trie_dealloc(trie, next->value.data);
             ngx_str_null(&next->value);
 
             if (next->path.data == NULL) {
@@ -272,8 +270,7 @@ ngx_trie_delete(ngx_trie_t *trie, ngx_str_t path)
 
 
 ngx_int_t
-ngx_trie_find(ngx_trie_t *trie, ngx_str_t *path, ngx_keyval_t *retval,
-    ngx_pool_t *temp_pool)
+ngx_trie_find(ngx_trie_t *trie, ngx_str_t *path, ngx_keyval_t *retval)
 {
     ngx_uint_t        j;
     ngx_trie_node_t  *node = &trie->root, *next;
@@ -303,11 +300,8 @@ ngx_trie_find(ngx_trie_t *trie, ngx_str_t *path, ngx_keyval_t *retval,
 
     if (last != NULL) {
 
-        retval->key = ngx_strdup(temp_pool, last->path.data,
-                                 last->path.len);
-        retval->value = ngx_strdup(temp_pool, last->value.data,
-                                   last->value.len);
-
+        retval->key = last->path;
+        retval->value = last->value;
         rc = NGX_OK;
     }
 
@@ -330,11 +324,11 @@ again:
 
     ngx_rbtree_delete(rbtree, (ngx_rbtree_node_t *) node);
 
-    ngx_trie_deallocate(trie, node->path.data);
-    ngx_trie_deallocate(trie, node->value.data);
-    ngx_trie_deallocate(trie, node->word.str.data);
-    ngx_trie_deallocate(trie, node->next.sentinel);
-    ngx_trie_deallocate(trie, node);
+    ngx_trie_dealloc(trie, node->path.data);
+    ngx_trie_dealloc(trie, node->value.data);
+    ngx_trie_dealloc(trie, node->word.str.data);
+    ngx_trie_dealloc(trie, node->next.sentinel);
+    ngx_trie_dealloc(trie, node);
 
     goto again;
 }
@@ -344,29 +338,27 @@ void
 ngx_trie_free(ngx_trie_t *trie)
 {
     ngx_trie_free_node(trie, &trie->root);
-    ngx_trie_deallocate(trie, trie);
+    ngx_trie_dealloc(trie, trie);
 }
 
 
-ngx_trie_t *
-ngx_trie_swap(ngx_trie_t *dst, ngx_trie_t *src)
+void
+ngx_trie_swap(ngx_trie_t *l, ngx_trie_t *r)
 {
     ngx_trie_t  tmp;
 
-    tmp.root = src->root;
-    tmp.pool = src->pool;
-    tmp.slab = src->slab;
-    tmp.data = src->data;
+    tmp.root = r->root;
+    tmp.pool = r->pool;
+    tmp.slab = r->slab;
+    tmp.data = r->data;
 
-    src->root = dst->root;
-    src->pool = dst->pool;
-    src->slab = dst->slab;
-    src->data = dst->data;
+    r->root = l->root;
+    r->pool = l->pool;
+    r->slab = l->slab;
+    r->data = l->data;
 
-    dst->root = tmp.root;
-    dst->pool = tmp.pool;
-    dst->slab = tmp.slab;
-    dst->data = tmp.data;
-
-    return dst;
+    l->root = tmp.root;
+    l->pool = tmp.pool;
+    l->slab = tmp.slab;
+    l->data = tmp.data;
 }

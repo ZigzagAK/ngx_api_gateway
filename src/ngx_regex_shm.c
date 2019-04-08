@@ -26,18 +26,18 @@ ngx_regex_shm_free(void *p)
 
 
 typedef void* (*pcre_malloc_t)(size_t);
-typedef void (*pcre_free_t)(void*);
+typedef void  (*pcre_free_t)(void*);
 
 
 ngx_int_t
 ngx_regex_shm_compile(ngx_regex_shm_compile_t *rc)
 {
-    int               n, erroff;
-    char             *p;
-    pcre             *re;
-    const char       *errstr;
-    pcre_malloc_t     prev_malloc = pcre_malloc;
-    pcre_free_t       prev_free = pcre_free;
+    int             n, erroff;
+    char           *p;
+    pcre           *re;
+    const char     *errstr;
+    pcre_malloc_t   prev_malloc = pcre_malloc;
+    pcre_free_t     prev_free = pcre_free;
 
     ngx_pcre_slab = rc->slab;
     pcre_malloc = ngx_regex_shm_alloc;
@@ -47,7 +47,7 @@ ngx_regex_shm_compile(ngx_regex_shm_compile_t *rc)
                       &errstr, &erroff, NULL);
 
     pcre_malloc = prev_malloc;
-    prev_free = prev_free;
+    pcre_free = prev_free;
     ngx_pcre_slab = NULL;
 
     if (re == NULL) {

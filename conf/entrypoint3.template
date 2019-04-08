@@ -6,7 +6,7 @@ server {
     location / {
         auth_request {{auth.request}};
 
-        api_gateway_router $backend {{backends}};
+        api_gateway_router $backend:5m {{backends}};
 
         proxy_connect_timeout {{proxy.connect_timeout}};
         proxy_read_timeout {{proxy.read_timeout}};
