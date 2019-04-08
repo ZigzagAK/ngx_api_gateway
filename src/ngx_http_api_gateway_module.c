@@ -184,59 +184,6 @@ ngx_api_gateway_create_loc_conf(ngx_conf_t *cf)
 }
 
 
-static ngx_int_t
-ngx_api_gateway_create_mappings(ngx_conf_t *cf,
-    ngx_http_api_gateway_loc_conf_t *alcf)
-{
-    ngx_http_api_gateway_conf_t  *gateway_conf;
-    ngx_template_conf_t          *conf;
-    ngx_template_seq_t           *seq;
-    ngx_uint_t                    k, j, i;
-    ngx_str_t                    *backend;
-
-    static ngx_str_t api = ngx_string("api");
-    
-    gateway_conf = alcf->entries.elts;
-
-    for (k = 0; k < alcf->entries.nelts; k++) {
-
-        if (gateway_conf[k].init)
-            continue;
-
-        gateway_conf[k].init = 1;
-
-        if (gateway_conf->zone == NULL) {
-            if (ngx_trie_init(gateway_conf[k].map.trie) == NGX_ERROR)
-                return NGX_ERROR;
-        }
-
-        backend = gateway_conf[k].backends.elts;
-
-        for (j = 0; j < gateway_conf[k].backends.nelts; j++) {
-
-            conf = ngx_template_lookup_by_name(cf->cycle, backend[j]);
-            if (conf == NULL)
-                continue;
-
-            seq = conf->seqs.elts;
-
-            for (i = 0; i < conf->seqs.nelts; i++) {
-
-                if (ngx_memn2cmp(seq[i].key.data, api.data,
-                                 seq[i].key.len, api.len) != 0)
-                    continue;
-
-                if (ngx_api_gateway_router_build(cf->cycle, cf->pool,
-                        &gateway_conf[k].map, conf->name, seq[i]) == NGX_ERROR)
-                    return NGX_ERROR;
-            }
-        }
-    }
-    
-    return NGX_OK;
-}
-
-
 static char *
 ngx_api_gateway_merge_loc_conf(ngx_conf_t *cf,
     void *prev, void *conf)
@@ -258,10 +205,7 @@ ngx_api_gateway_merge_loc_conf(ngx_conf_t *cf,
         *c = gateway_conf[j];
     }
 
-    if (ngx_api_gateway_create_mappings(cf, child) == NGX_OK)
-        return NGX_CONF_OK;
-
-    return NGX_CONF_ERROR;
+    return NGX_CONF_OK;
 }
 
 

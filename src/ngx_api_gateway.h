@@ -22,6 +22,7 @@ typedef struct {
 
 typedef struct {
     ngx_array_t   templates;
+    ngx_array_t   routers;
     ngx_msec_t    timeout;
     ngx_msec_t    interval;
     ngx_int_t     request_path_index;

@@ -5,11 +5,14 @@
 #include "ngx_api_gateway_router.h"
 #include "ngx_template.h"
 #include "ngx_regex_shm.h"
+#include "ngx_api_gateway.h"
 
 #include <ngx_http.h>
 
 
 extern ngx_str_t ngx_strdup(ngx_pool_t *pool, u_char *s, size_t len);
+
+extern ngx_module_t ngx_http_api_gateway_module;
 
 
 ngx_int_t
@@ -59,7 +62,10 @@ ngx_api_gateway_router(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_str_t                        *value, *s, var;
     ngx_uint_t                        j;
     ngx_conf_post_t                  *post = cmd->post;
-    ngx_http_api_gateway_conf_t      *gateway_conf;
+    ngx_http_api_gateway_conf_t      *gateway_conf, **p_gateway_conf;
+    ngx_api_gateway_main_conf_t      *amcf;
+
+    amcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_api_gateway_module);
 
     value = cf->args->elts;
 
@@ -94,6 +100,14 @@ ngx_api_gateway_router(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             return NGX_CONF_ERROR;
         *s = value[j];
     }
+
+    p_gateway_conf = ngx_array_push(&amcf->routers);
+    if (p_gateway_conf == NULL) {
+        ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "no memory");
+        return NGX_CONF_ERROR;
+    }
+
+    *p_gateway_conf = gateway_conf;
 
     return post->post_handler(cf, gateway_conf, conf);
 }

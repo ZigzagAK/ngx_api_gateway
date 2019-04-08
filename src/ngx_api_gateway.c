@@ -3,6 +3,7 @@
  */
 
 #include "ngx_api_gateway.h"
+#include "ngx_api_gateway_router.h"
 #include <ngx_http.h>
 
 
@@ -38,6 +39,10 @@ ngx_api_gateway_create_main_conf(ngx_conf_t *cf)
                        sizeof(ngx_api_gateway_template_t)) == NGX_ERROR)
         return NULL;
 
+    if (ngx_array_init(&amcf->routers, cf->cycle->pool, 10,
+                       sizeof(ngx_http_api_gateway_conf_t *)) == NGX_ERROR)
+        return NULL;
+
     amcf->interval = NGX_CONF_UNSET_MSEC;
     amcf->timeout = NGX_CONF_UNSET_MSEC;
     amcf->request_path_index = NGX_ERROR;
@@ -47,12 +52,64 @@ ngx_api_gateway_create_main_conf(ngx_conf_t *cf)
 }
 
 
+static ngx_int_t
+ngx_api_gateway_create_mappings(ngx_conf_t *cf,
+    ngx_http_api_gateway_conf_t *gateway_conf)
+{
+    ngx_template_conf_t  *conf;
+    ngx_template_seq_t   *seq;
+    ngx_uint_t            j, i;
+    ngx_str_t            *backend;
+
+    static ngx_str_t api = ngx_string("api");
+
+    if (gateway_conf->zone == NULL) {
+        if (ngx_trie_init(gateway_conf->map.trie) == NGX_ERROR)
+            return NGX_ERROR;
+    }
+
+    backend = gateway_conf->backends.elts;
+
+    for (j = 0; j < gateway_conf->backends.nelts; j++) {
+
+        conf = ngx_template_lookup_by_name(cf->cycle, backend[j]);
+        if (conf == NULL)
+            continue;
+
+        seq = conf->seqs.elts;
+
+        for (i = 0; i < conf->seqs.nelts; i++) {
+
+            if (ngx_memn2cmp(seq[i].key.data, api.data,
+                             seq[i].key.len, api.len) != 0)
+                continue;
+
+            if (ngx_api_gateway_router_build(cf->cycle, cf->pool,
+                    &gateway_conf->map, conf->name, seq[i]) == NGX_ERROR)
+                return NGX_ERROR;
+        }
+    }
+    
+    return NGX_OK;
+}
+
+
 char *
 ngx_api_gateway_init_main_conf(ngx_conf_t *cf, void *conf)
 {
-    ngx_api_gateway_main_conf_t  *amcf = conf;
+    ngx_api_gateway_main_conf_t    *amcf = conf;
+    ngx_http_api_gateway_conf_t  **gateway_conf;
+    ngx_uint_t                     j;
+
     ngx_conf_init_msec_value(amcf->interval, DEFAULT_INTERVAL);
     ngx_conf_init_msec_value(amcf->timeout, DEFAULT_TIMEOUT);
+
+    gateway_conf = amcf->routers.elts;
+
+    for (j = 0; j < amcf->routers.nelts; j++)
+        if (ngx_api_gateway_create_mappings(cf, gateway_conf[j]) == NGX_ERROR)
+            return NGX_CONF_ERROR;
+
     return NGX_CONF_OK;
 }
 
@@ -123,7 +180,7 @@ ngx_api_gateway_template_directive(ngx_conf_t *cf, ngx_command_t *cmd,
     }
 
     gw->t = *t;
-
+    
     return NGX_CONF_OK;
 }
 
