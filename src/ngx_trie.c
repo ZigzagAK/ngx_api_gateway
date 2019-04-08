@@ -35,7 +35,7 @@ ngx_trie_alloc(ngx_trie_t *trie, size_t size)
 
 
 static void
-ngx_trie_dealloc(ngx_trie_t *trie, void *p)
+ngx_trie_free(ngx_trie_t *trie, void *p)
 {
     if (p == NULL)
         return;
@@ -46,6 +46,19 @@ ngx_trie_dealloc(ngx_trie_t *trie, void *p)
     }
 
     ngx_pfree(trie->pool, p);
+}
+
+
+static ngx_str_t
+ngx_trie_dupstr(ngx_trie_t *trie, ngx_str_t s)
+{
+    ngx_str_t  dup = ngx_null_string;
+    dup.data = ngx_trie_alloc(trie, s.len);
+    if (dup.data == NULL)
+        return dup;
+    ngx_memcpy(dup.data, s.data, s.len);
+    dup.len = s.len;
+    return dup;
 }
 
 
@@ -98,51 +111,56 @@ ngx_trie_shm_init(ngx_trie_t *trie, ngx_slab_pool_t *slab)
 
 
 static ngx_trie_node_t *
-ngx_trie_lookup(ngx_rbtree_t *rbtree, ngx_str_t word)
+ngx_trie_lookup(ngx_trie_node_t *parent, ngx_str_t word)
 {
-    return (ngx_trie_node_t *) ngx_str_rbtree_lookup(rbtree, &word,
+    return (ngx_trie_node_t *) ngx_str_rbtree_lookup(&parent->next, &word,
         ngx_crc32_short(word.data, word.len));
 }
 
 
 static ngx_trie_node_t *
-ngx_trie_insert_node(ngx_trie_t *trie, ngx_rbtree_t *rbtree, ngx_str_t word)
+ngx_trie_insert_node(ngx_trie_t *trie, ngx_trie_node_t *parent, ngx_str_t word)
 {
     ngx_rbtree_node_t  *node;
-    ngx_trie_node_t    *trie_node;
+    ngx_trie_node_t    *next;
     uint32_t            hash;
     ngx_rbtree_node_t  *sentinel;
 
     hash = ngx_crc32_short(word.data, word.len);
 
-    trie_node = (ngx_trie_node_t *) ngx_str_rbtree_lookup(rbtree, &word, hash);
+    next = (ngx_trie_node_t *)
+            ngx_str_rbtree_lookup(&parent->next, &word, hash);
 
-    if (trie_node != NULL)
-        return trie_node;
+    if (next != NULL)
+        return next;
 
-    trie_node = ngx_trie_alloc(trie, sizeof(ngx_trie_node_t));
-    if (trie_node == NULL)
+    next = ngx_trie_alloc(trie, sizeof(ngx_trie_node_t));
+    if (next == NULL)
         return NULL;
 
-    trie_node->word.str = word;
+    next->word.str = ngx_trie_dupstr(trie, word);
+    if (next->word.str.data == NULL)
+        return NULL;
 
     sentinel = ngx_trie_alloc(trie, sizeof(ngx_rbtree_node_t));
     if (sentinel == NULL)
         return NULL;
 
-    ngx_rbtree_init(&trie_node->next, sentinel, ngx_str_rbtree_insert_value);
+    ngx_rbtree_init(&next->next, sentinel, ngx_str_rbtree_insert_value);
 
-    node = (ngx_rbtree_node_t *) trie_node;
+    next->parent = parent;
+
+    node = (ngx_rbtree_node_t *) next;
     node->key = hash;
 
-    ngx_rbtree_insert(rbtree, node);
+    ngx_rbtree_insert(&parent->next, node);
 
-    return trie_node;
+    return next;
 }
 
 
 static ngx_int_t
-split(ngx_trie_t *trie, ngx_str_t path, ngx_str_t *word, ngx_uint_t n)
+split(ngx_str_t path, ngx_str_t *word, ngx_uint_t n)
 {
     u_char  *c1, *c2;
 
@@ -153,11 +171,8 @@ split(ngx_trie_t *trie, ngx_str_t path, ngx_str_t *word, ngx_uint_t n)
             if (n-- == 0)
                 return NGX_ERROR;
 
+            word->data = c1;
             word->len = c2 - c1;
-            word->data = ngx_trie_alloc(trie, word->len);
-            if (word->data == NULL)
-                return NGX_ERROR;
-            ngx_memcpy(word->data, c1, word->len);
 
             c1 = ++c2;
             word++;
@@ -168,19 +183,6 @@ split(ngx_trie_t *trie, ngx_str_t path, ngx_str_t *word, ngx_uint_t n)
     word->len = 0;
 
     return NGX_OK;
-}
-
-
-static ngx_str_t
-ngx_trie_dupstr(ngx_trie_t *trie, ngx_str_t s)
-{
-    ngx_str_t  dup = ngx_null_string;
-    dup.data = ngx_trie_alloc(trie, s.len);
-    if (dup.data == NULL)
-        return dup;
-    ngx_memcpy(dup.data, s.data, s.len);
-    dup.len = s.len;
-    return dup;
 }
 
 
@@ -204,16 +206,16 @@ ngx_trie_set(ngx_trie_t *trie, ngx_str_t path, ngx_str_t value)
         return NGX_OK;
     }
 
-    if (split(trie, path, word, MAX_URI_PARTS) == NGX_ERROR)
+    if (split(path, word, MAX_URI_PARTS) == NGX_ERROR)
         return NGX_ERROR;
 
-    for (j = 0; word[j].data != NULL; j++) {
+    for (j = 0; word[j].data != NULL; j++, node = next) {
 
         if (value.data != NULL) {
 
             // insert
 
-            next = ngx_trie_insert_node(trie, &node->next, word[j]);
+            next = ngx_trie_insert_node(trie, node, word[j]);
             if (next == NULL)
                 return NGX_ERROR;
 
@@ -221,7 +223,7 @@ ngx_trie_set(ngx_trie_t *trie, ngx_str_t path, ngx_str_t value)
 
             // delete
 
-            next = ngx_trie_lookup(&node->next, word[j]);
+            next = ngx_trie_lookup(node, word[j]);
             if (next == NULL)
                 break;
 
@@ -231,7 +233,7 @@ ngx_trie_set(ngx_trie_t *trie, ngx_str_t path, ngx_str_t value)
 
             // free old value
 
-            ngx_trie_dealloc(trie, next->value.data);
+            ngx_trie_free(trie, next->value.data);
             ngx_str_null(&next->value);
 
             if (next->path.data == NULL) {
@@ -251,10 +253,31 @@ ngx_trie_set(ngx_trie_t *trie, ngx_str_t path, ngx_str_t value)
                 if (next->value.data == NULL)
                     return NGX_ERROR;
 
+            } else {
+
+                // delete
+
+                for (node = next;
+                     node->next.root == node->next.sentinel
+                             && NULL == node->value.data;
+                     node = next) {
+                    
+                    ngx_rbtree_delete(&node->parent->next,
+                            (ngx_rbtree_node_t *) node);
+
+                    ngx_trie_free(trie, node->path.data);
+                    ngx_trie_free(trie, node->word.str.data);
+                    ngx_trie_free(trie, node->next.sentinel);
+
+                    next = node->parent;
+
+                    ngx_trie_free(trie, node);
+
+                    if (next == NULL)
+                        break;
+                }
             }
         }
-
-        node = next;
     }
 
     return NGX_OK;
@@ -280,14 +303,14 @@ ngx_trie_find(ngx_trie_t *trie, ngx_str_t *path, ngx_keyval_t *retval)
 
     static ngx_str_t  star = ngx_string("*");
 
-    if (split(trie, *path, word, MAX_URI_PARTS) == NGX_ERROR)
+    if (split(*path, word, MAX_URI_PARTS) == NGX_ERROR)
         return NGX_ERROR;
 
     for (j = 0; word[j].data != NULL; j++) {
 
-        next = ngx_trie_lookup(&node->next, word[j]);
+        next = ngx_trie_lookup(node, word[j]);
         if (next == NULL) {
-            next = ngx_trie_lookup(&node->next, star);
+            next = ngx_trie_lookup(node, star);
             if (next == NULL)
                 break;
         }
@@ -324,21 +347,21 @@ again:
 
     ngx_rbtree_delete(rbtree, (ngx_rbtree_node_t *) node);
 
-    ngx_trie_dealloc(trie, node->path.data);
-    ngx_trie_dealloc(trie, node->value.data);
-    ngx_trie_dealloc(trie, node->word.str.data);
-    ngx_trie_dealloc(trie, node->next.sentinel);
-    ngx_trie_dealloc(trie, node);
+    ngx_trie_free(trie, node->path.data);
+    ngx_trie_free(trie, node->value.data);
+    ngx_trie_free(trie, node->word.str.data);
+    ngx_trie_free(trie, node->next.sentinel);
+    ngx_trie_free(trie, node);
 
     goto again;
 }
 
 
 void
-ngx_trie_free(ngx_trie_t *trie)
+ngx_trie_destroy(ngx_trie_t *trie)
 {
     ngx_trie_free_node(trie, &trie->root);
-    ngx_trie_dealloc(trie, trie);
+    ngx_trie_free(trie, trie);
 }
 
 
