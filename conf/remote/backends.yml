@@ -7,7 +7,7 @@ backends:
       - /app1/fun2
       - /app1/fun3
       - ~ ^/app1/re1
-      - /app1/fun10
+      - /app1/fun9
     dns:
       update: 60s
     server:

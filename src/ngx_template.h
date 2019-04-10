@@ -13,6 +13,7 @@
 
 typedef struct {
     ngx_str_t      key;
+    ngx_str_t      value;
     ngx_str_t     *elts;
     ngx_uint_t     nelts;
 } ngx_template_seq_t;
@@ -23,14 +24,14 @@ typedef struct {
     ngx_keyval_t  *keys;
     ngx_uint_t     nkeys;
     ngx_str_t      conf;
+    ngx_str_t      fullname;
     ngx_str_t      name;
     ngx_array_t    seqs;
 } ngx_template_conf_t;
 
 
 typedef ngx_int_t (*on_key_t)(ngx_str_t path, yaml_char_t *key, size_t key_len,
-    ngx_pool_t *pool, yaml_parser_t *parser, ngx_template_conf_t *conf,
-    ngx_str_t *retval);
+    ngx_pool_t *pool, yaml_parser_t *parser, ngx_template_conf_t *conf);
 
 
 typedef struct {
@@ -43,7 +44,7 @@ typedef struct {
     ngx_args_t     args;
     ngx_array_t    entries;
     ngx_str_t      keyfile;
-    ngx_str_t      yaml;
+    ngx_str_t      yaml;      // alloc from ngx_calloc
     ngx_str_t      filename;
     ngx_str_t      template;
     time_t         updated;

@@ -1,0 +1,25 @@
+server {
+    listen {{listen}} reuseport;
+
+    default_type text/plain;
+
+    location / {
+        auth_request {{auth.request}};
+
+        api_gateway_router_dynamic $dynamic:5m;
+
+        proxy_connect_timeout {{proxy.connect_timeout}};
+        proxy_read_timeout {{proxy.read_timeout}};
+
+        if ($dynamic = '') {
+            return 404 'No route';
+        }
+
+        proxy_pass {{proxy.protocol}}://$dynamic;
+    }
+
+    location = /auth_stub {
+        internal;
+        return 200;
+    }
+}

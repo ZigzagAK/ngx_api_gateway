@@ -82,7 +82,7 @@ ngx_api_gateway_create_mappings(ngx_cycle_t *cycle,
             continue;
 
         ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
-                "rebuild routes for backend=%V", &conf->name);
+                "rebuild routes for backend=%V", &conf->fullname);
 
         seq = conf->seqs.elts;
 
@@ -92,8 +92,8 @@ ngx_api_gateway_create_mappings(ngx_cycle_t *cycle,
                              seq[i].key.len, api.len) != 0)
                 continue;
 
-            if (ngx_api_gateway_router_build(cycle, pool,
-                    router, conf->name, seq[i]) == NGX_ERROR)
+            if (ngx_api_gateway_router_build(cycle, pool, router,
+                    conf->fullname, seq[i].elts, seq[i].nelts) == NGX_ERROR)
                 return NGX_ERROR;
         }
     }
@@ -163,7 +163,7 @@ ngx_api_gateway_init_main_conf(ngx_conf_t *cf, void *conf)
 
     for (j = 0; j < amcf->routers.nelts; j++) {
 
-        if (router[j]->backends.nelts == 0)
+        if (!router[j]->dynamic && router[j]->backends.nelts == 0)
             router[j]->backends = amcf->backends;
 
         if (ngx_api_gateway_create_mappings(cf->cycle, router[j],
@@ -188,8 +188,7 @@ static ngx_int_t KEYS_seqn = sizeof(KEYS_seq) / sizeof(KEYS_seq[0]);
 
 static ngx_int_t
 ngx_api_gateway_handle_key(ngx_str_t path, yaml_char_t *key, size_t key_len,
-    ngx_pool_t *pool, yaml_parser_t *parser, ngx_template_conf_t *conf,
-    ngx_str_t *retval)
+    ngx_pool_t *pool, yaml_parser_t *parser, ngx_template_conf_t *conf)
 {
     ngx_int_t  j;
 

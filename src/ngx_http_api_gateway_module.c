@@ -27,6 +27,13 @@ static ngx_int_t
 ngx_api_gateway_post_conf(ngx_conf_t *cf);
 
 
+char *
+ngx_api_gateway_route_set(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+
+char *
+ngx_api_gateway_route_delete(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+
+
 static ngx_http_module_t ngx_http_api_gateway_ctx = {
     ngx_api_gateway_pre_conf,          /* preconfiguration */
     ngx_api_gateway_post_conf,         /* postconfiguration */
@@ -71,6 +78,13 @@ static ngx_command_t  ngx_http_api_gateway_commands[] = {
       0,
       &ngx_api_gateway_router_post },
 
+    { ngx_string("api_gateway_router_dynamic"),
+      NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_1MORE,
+      ngx_api_gateway_router,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      &ngx_api_gateway_router_post },
+
     { ngx_string("api_gateway_template"),
       NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE123,
       ngx_api_gateway_template_directive,
@@ -90,6 +104,20 @@ static ngx_command_t  ngx_http_api_gateway_commands[] = {
       ngx_conf_set_msec_slot,
       NGX_HTTP_MAIN_CONF_OFFSET,
       offsetof(ngx_api_gateway_main_conf_t, interval),
+      NULL },
+
+    { ngx_string("api_gateway_route_set"),
+      NGX_HTTP_LOC_CONF|NGX_CONF_NOARGS,
+      ngx_api_gateway_route_set,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL },
+
+    { ngx_string("api_gateway_route_delete"),
+      NGX_HTTP_LOC_CONF|NGX_CONF_NOARGS,
+      ngx_api_gateway_route_delete,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
       NULL },
 
       ngx_null_command
@@ -468,4 +496,189 @@ ngx_api_gateway_router_init_shm(ngx_shm_zone_t *zone, void *old)
     conf->sh = sh;
 
     return NGX_OK;
+}
+
+
+static ngx_str_t
+get_var(ngx_http_request_t *r, const char *v)
+{
+    ngx_str_t                   var = { ngx_strlen(v), (u_char *) v };
+    ngx_http_variable_value_t  *value;
+    u_char                     *dst, *src;
+    ngx_str_t                   retval = ngx_null_string;
+
+    value = ngx_http_get_variable(r, &var, ngx_hash_key(var.data, var.len));
+
+    if (value->not_found)
+        return retval;
+
+    src = value->data;
+
+    dst = ngx_pcalloc(r->pool, value->len + 1);
+    if (dst == NULL)
+        return retval;
+
+    retval.data = dst;
+
+    ngx_unescape_uri(&dst, &src, value->len, 0);
+
+    retval.len = dst - retval.data;
+    
+    return retval;
+}
+
+
+static ngx_int_t
+send_response(ngx_http_request_t *r, ngx_uint_t status,
+    const char *text)
+{
+    ngx_http_complex_value_t  cv;
+
+    static ngx_str_t TEXT_PLAIN = ngx_string("text/plain");
+
+    ngx_memzero(&cv, sizeof(ngx_http_complex_value_t));
+
+    cv.value.len = strlen(text);
+    cv.value.data = (u_char *) text;
+
+    return ngx_http_send_response(r, status, &TEXT_PLAIN, &cv);
+}
+
+
+static ngx_int_t
+send_no_content(ngx_http_request_t *r)
+{
+    ngx_http_complex_value_t  cv;
+
+    ngx_memzero(&cv, sizeof(ngx_http_complex_value_t));
+
+    r->header_only = 1;
+    
+    return ngx_http_send_response(r, NGX_HTTP_NO_CONTENT, NULL, &cv);
+}
+
+
+static ngx_int_t
+ngx_api_gateway_route_set_handler(ngx_http_request_t *r)
+{
+    ngx_api_gateway_main_conf_t     *amcf;
+    ngx_str_t                        backend;
+    ngx_str_t                        api;
+    ngx_str_t                        var;
+    ngx_http_api_gateway_router_t  **router;
+    ngx_uint_t                       j;
+
+    amcf = ngx_http_get_module_main_conf(r, ngx_http_api_gateway_module);
+
+    if (r->method != NGX_HTTP_POST)
+        return NGX_HTTP_NOT_ALLOWED;
+
+    backend = get_var(r, "arg_backend");
+    api = get_var(r, "arg_api");
+    var = get_var(r, "arg_var");
+
+    if (backend.data == NULL || api.data == NULL || var.data == NULL)
+        return send_response(r, NGX_HTTP_BAD_REQUEST,
+            "backend, api and var arguments required");
+
+    if (var.data[0] != '$')
+        return send_response(r, NGX_HTTP_BAD_REQUEST,
+            "backend var value, required: var=$xxx");
+
+    router = amcf->routers.elts;
+
+    var.data++;
+    var.len--;
+
+    for (j = 0; j < amcf->routers.nelts; j++) {
+
+        if (router[j]->var.len < var.len)
+            continue;
+
+        if (ngx_memn2cmp(router[j]->var.data, var.data,
+                         var.len, var.len) == 0) {
+
+            if (ngx_api_gateway_router_set(router[j], backend, api) == NGX_OK)
+                return send_no_content(r);
+
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+    }
+
+    return send_response(r, NGX_HTTP_NOT_FOUND, "router not found");
+}
+
+
+char *
+ngx_api_gateway_route_set(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_http_core_loc_conf_t  *clcf;
+
+    clcf = (ngx_http_core_loc_conf_t *) ngx_http_conf_get_module_loc_conf(cf,
+        ngx_http_core_module);
+    clcf->handler = ngx_api_gateway_route_set_handler;
+
+    return NGX_CONF_OK;
+}
+
+
+static ngx_int_t
+ngx_api_gateway_route_delete_handler(ngx_http_request_t *r)
+{
+    ngx_api_gateway_main_conf_t     *amcf;
+    ngx_str_t                        api;
+    ngx_str_t                        var;
+    ngx_http_api_gateway_router_t  **router;
+    ngx_uint_t                       j;
+
+    amcf = ngx_http_get_module_main_conf(r, ngx_http_api_gateway_module);
+
+    if (r->method != NGX_HTTP_DELETE)
+        return NGX_HTTP_NOT_ALLOWED;
+
+    api = get_var(r, "arg_api");
+    var = get_var(r, "arg_var");
+
+    if (api.data == NULL || var.data == NULL)
+        return send_response(r, NGX_HTTP_BAD_REQUEST,
+            "api and var arguments required");
+
+    if (var.data[0] != '$')
+        return send_response(r, NGX_HTTP_BAD_REQUEST,
+            "backend var value, required: var=$xxx");
+
+    router = amcf->routers.elts;
+
+    var.data++;
+    var.len--;
+
+    for (j = 0; j < amcf->routers.nelts; j++) {
+
+        if (router[j]->var.len < var.len)
+            continue;
+
+        if (ngx_memn2cmp(router[j]->var.data, var.data,
+                         var.len, var.len) == 0) {
+
+            if (ngx_api_gateway_router_delete(router[j], api) == NGX_OK)
+                return send_no_content(r);
+
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+    }
+
+    return send_response(r, NGX_HTTP_NOT_FOUND, "router not found");
+}
+
+
+char *
+ngx_api_gateway_route_delete(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_http_core_loc_conf_t  *clcf;
+
+    clcf = (ngx_http_core_loc_conf_t *) ngx_http_conf_get_module_loc_conf(cf,
+        ngx_http_core_module);
+    clcf->handler = ngx_api_gateway_route_delete_handler;
+
+    return NGX_CONF_OK;
 }

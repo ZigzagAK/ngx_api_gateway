@@ -1,4 +1,4 @@
-upstream {{name}} {
+upstream {{__group}}@{{name}} {
     zone shm_{{name}} 256k;
 
     upsync unix:logs/registry.sock/registry/backends/nodes?backend={{name}};

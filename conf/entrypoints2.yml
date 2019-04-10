@@ -5,10 +5,10 @@ entrypoints2:
     listen: 11111
     server:
       directives:
-        - set $variable1 1;\n
+        - set $variable1 1;
         - set $variable2 2;
       locations:
-        - location ~* ^/app1/.+\.(jpg|gif|png)$ { proxy_pass http://backends@app1; }\n
+        - location ~* ^/app1/.+\.(jpg|gif|png)$ { proxy_pass http://backends@app1; }
         - location ~* ^/app2/.+\.(jpg|gif|png)$ { proxy_pass http://backends@app2; }
     location:
       directives:

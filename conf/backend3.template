@@ -1,10 +1,10 @@
-upstream {{name}} {
+upstream {{__group}}@{{name}} {
     zone shm_{{name}} 256k;
 
     dns_update {{dns.update}};
     dns_add_down on;
 
- {{servers}}
+    {{servers}}
 
     check passive type=http rise={{ check.rise | check@http.rise | default(1) }} fall={{ check.fall | check@http.fall | default(1) }} timeout={{ check.timeout | check@http.timeout | default(1000) }} interval={{ check.interval | check@http.interval | default(10) }};
     check_request_uri {{ check.request.method | check@http.request.method | default(GET) }} {{ check.request.uri | check@http.request.uri | default(/health) }};

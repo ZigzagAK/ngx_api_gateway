@@ -264,9 +264,9 @@ ngx_trie_set(ngx_trie_t *trie, ngx_str_t path, ngx_str_t value)
                      node->next.root == node->next.sentinel
                              && NULL == node->value.data;
                      node = next) {
-                    
+
                     ngx_rbtree_delete(&node->parent->next,
-                            (ngx_rbtree_node_t *) node);
+                        (ngx_rbtree_node_t *) node);
 
                     ngx_trie_free(trie, node->path.data);
                     ngx_trie_free(trie, node->word.str.data);
@@ -276,7 +276,7 @@ ngx_trie_set(ngx_trie_t *trie, ngx_str_t path, ngx_str_t value)
 
                     ngx_trie_free(trie, node);
 
-                    if (next == NULL)
+                    if (next->parent == NULL)
                         break;
                 }
             }

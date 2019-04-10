@@ -21,5 +21,5 @@ backends2:
       response:
         match: pong
     servers:
-      - server 127.0.0.1:3333 max_conns={{server.max_conns}} max_fails={{server.max_fails}} fail_timeout={{server.fail_timeout}};\n
+      - server 127.0.0.1:3333 max_conns={{server.max_conns}} max_fails={{server.max_fails}} fail_timeout={{server.fail_timeout}};
       - server 127.0.0.1:4444 max_conns={{server.max_conns}} max_fails={{server.max_fails}} fail_timeout={{server.fail_timeout}};

@@ -110,6 +110,8 @@ ngx_api_gateway_router(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    router->dynamic = ngx_eqstr(cmd->name, "api_gateway_router_dynamic");
+
     *router_ptr = router;
 
     return post->post_handler(cf, router, conf);
@@ -119,7 +121,7 @@ ngx_api_gateway_router(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 ngx_int_t
 ngx_api_gateway_router_build(ngx_cycle_t *cycle, ngx_pool_t *pool,
     ngx_http_api_gateway_router_t *router, ngx_str_t backend,
-    ngx_template_seq_t entries)
+    ngx_str_t *api, ngx_uint_t napi)
 {
     ngx_mapping_regex_t            *regex;
     ngx_uint_t                      j;
@@ -142,9 +144,11 @@ ngx_api_gateway_router_build(ngx_cycle_t *cycle, ngx_pool_t *pool,
 
     ngx_queue_init(map.regex);
 
-    for (j = 0; j < entries.nelts; j++) {
+    for (j = 0; j < napi; j++) {
 
-        path = entries.elts[j];
+        path = api[j];
+
+        ngx_trim(&path);
 
         if (path.data[0] != '~') {
 
@@ -206,15 +210,68 @@ nomem:
 }
 
 
+static ngx_mapping_regex_t *
+compile_shm_regex(ngx_slab_pool_t *slab, ngx_str_t pattern, ngx_str_t backend)
+{
+    ngx_regex_shm_compile_t  rc;
+    ngx_mapping_regex_t     *regex;
+    u_char                   errstr[NGX_MAX_CONF_ERRSTR];
+
+    ngx_memzero(&rc, sizeof(ngx_regex_shm_compile_t));
+
+    rc.pattern = pattern;
+    rc.slab = slab;
+    rc.err.len = NGX_MAX_CONF_ERRSTR;
+    rc.err.data = errstr;
+    rc.options = PCRE_UNGREEDY;
+
+    if (ngx_regex_shm_compile(&rc) != NGX_OK) {
+
+        ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, 0,
+            "%V: failed to compile %V, %V",
+            &backend, &pattern, &rc.err);
+        return NULL;
+    }
+
+    regex = ngx_slab_alloc(slab, sizeof(ngx_mapping_regex_t));
+    if (regex == NULL)
+        return NULL;
+
+    regex->backend.data = ngx_slab_alloc(slab, backend.len);
+    regex->pattern.data = ngx_slab_alloc(slab, pattern.len);
+
+    if (regex->backend.data == NULL || regex->pattern.data == NULL)
+        return NULL;
+
+    ngx_memcpy(regex->backend.data, backend.data, backend.len);
+    ngx_memcpy(regex->pattern.data, pattern.data, pattern.len);
+
+    regex->backend.len = backend.len;
+    regex->pattern.len = pattern.len;
+    regex->re = rc.regex;
+
+    return regex;
+}
+
+
+static void
+free_shm_regex(ngx_slab_pool_t *slab, ngx_mapping_regex_t *regex)
+{
+    ngx_slab_free(slab, regex->backend.data);
+    ngx_slab_free(slab, regex->pattern.data);
+    ngx_slab_free(slab, regex->re->code);
+    ngx_slab_free(slab, regex->re);
+    ngx_slab_free(slab, regex);
+}
+
+
 ngx_int_t
 ngx_api_gateway_router_shm_init(ngx_http_api_gateway_router_t *router,
     ngx_http_api_gateway_shctx_t *sh)
 {
-    ngx_mapping_regex_t            *regex, *regex_shm;
+    ngx_mapping_regex_t            *regex;
     ngx_queue_t                    *q;
-    ngx_regex_shm_compile_t         rc;
-    u_char                          errstr[NGX_MAX_CONF_ERRSTR];
-    ngx_http_api_gateway_mapping_t  next, old;
+    ngx_http_api_gateway_mapping_t  map, old;
 
     if (sh->map.lock == NULL) {
 
@@ -223,66 +280,33 @@ ngx_api_gateway_router_shm_init(ngx_http_api_gateway_router_t *router,
             goto nomem;
     }
 
-    next.trie = ngx_trie_shm_init(router->map.trie, sh->slab);
-    if (next.trie == NULL)
+    map.trie = ngx_trie_shm_init(router->map.trie, sh->slab);
+    if (map.trie == NULL)
         goto nomem;
 
-    next.regex = ngx_slab_alloc(sh->slab, sizeof(ngx_queue_t));
-    if (next.regex == NULL)
+    map.regex = ngx_slab_alloc(sh->slab, sizeof(ngx_queue_t));
+    if (map.regex == NULL)
         goto nomem;
 
-    ngx_queue_init(next.regex);
+    ngx_queue_init(map.regex);
 
     for (q = ngx_queue_head(router->map.regex);
          q != ngx_queue_sentinel(router->map.regex);
          q = ngx_queue_next(q))
     {
         regex = ngx_queue_data(q, ngx_mapping_regex_t, queue);
-
-        ngx_memzero(&rc, sizeof(ngx_regex_shm_compile_t));
-
-        rc.pattern = regex->pattern;
-        rc.slab = sh->slab;
-        rc.err.len = NGX_MAX_CONF_ERRSTR;
-        rc.err.data = errstr;
-        rc.options = PCRE_UNGREEDY;
-
-        if (ngx_regex_shm_compile(&rc) != NGX_OK) {
-
-            ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, 0,
-                "%V: failed to compile %V, %V",
-                &regex->backend, &rc.pattern, &rc.err);
-            return NGX_ERROR;
-        }
-
-        regex_shm = ngx_slab_alloc(sh->slab, sizeof(ngx_mapping_regex_t));
-        if (regex_shm == NULL)
+        regex = compile_shm_regex(sh->slab, regex->pattern, regex->backend);
+        if (regex == NULL)
             goto nomem;
-
-        regex_shm->backend.data = ngx_slab_alloc(sh->slab, regex->backend.len);
-        regex_shm->pattern.data = ngx_slab_alloc(sh->slab, regex->pattern.len);
-
-        if (regex_shm->backend.data == NULL || regex_shm->pattern.data == NULL)
-            goto nomem;
-
-        ngx_memcpy(regex_shm->backend.data, regex->backend.data,
-                   regex->backend.len);
-        ngx_memcpy(regex_shm->pattern.data, regex->pattern.data,
-                   regex->pattern.len);
-
-        regex_shm->backend.len = regex->backend.len;
-        regex_shm->pattern.len = regex->pattern.len;
-        regex_shm->re = rc.regex;
-
-        ngx_queue_insert_tail(next.regex, &regex_shm->queue);
+        ngx_queue_insert_tail(map.regex, &regex->queue);
     }
 
     ngx_rwlock_wlock(sh->map.lock);
 
     old = sh->map;
 
-    sh->map.trie = next.trie;
-    sh->map.regex = next.regex;
+    sh->map.trie = map.trie;
+    sh->map.regex = map.regex;
 
     ngx_rwlock_unlock(sh->map.lock);
 
@@ -294,13 +318,8 @@ ngx_api_gateway_router_shm_init(ngx_http_api_gateway_router_t *router,
              q != ngx_queue_sentinel(old.regex);
              q = ngx_queue_next(q)) {
 
-            regex_shm = ngx_queue_data(q, ngx_mapping_regex_t, queue);
-
-            ngx_slab_free(sh->slab, regex_shm->backend.data);
-            ngx_slab_free(sh->slab, regex_shm->pattern.data);
-            ngx_slab_free(sh->slab, regex_shm->re->code);
-            ngx_slab_free(sh->slab, regex_shm->re);
-            ngx_slab_free(sh->slab, regex_shm);
+            regex = ngx_queue_data(q, ngx_mapping_regex_t, queue);
+            free_shm_regex(sh->slab, regex);
         }
 
         ngx_slab_free(sh->slab, old.regex);
@@ -311,7 +330,7 @@ ngx_api_gateway_router_shm_init(ngx_http_api_gateway_router_t *router,
 nomem:
 
     ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
-                  "%V: no shared memory", &regex->backend);
+                  "$%V: no shared memory", &router->var);
     return NGX_ERROR;
 }
 
@@ -382,4 +401,119 @@ done:
         ngx_rwlock_unlock(m->lock);
 
     return upstream->data != NULL ? NGX_OK : NGX_DECLINED;
+}
+
+
+ngx_int_t
+ngx_api_gateway_router_set(ngx_http_api_gateway_router_t *router,
+    ngx_str_t backend, ngx_str_t api)
+{
+    ngx_int_t             retval = NGX_ERROR;
+    ngx_mapping_regex_t  *regex;
+    ngx_queue_t          *q;
+
+    if (router->sh == NULL) {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                "dynamic router requires shared zone "
+                "segment: $var:10m for example ");
+        return NGX_ERROR;
+    }
+
+    ngx_trim(&api);
+
+    ngx_rwlock_wlock(router->sh->map.lock);
+
+    if (api.data[0] != '~') {
+        retval = ngx_trie_set(router->sh->map.trie, api, backend);
+        goto done;
+    }
+
+    api.data++;
+    api.len--;
+
+    ngx_trim(&api);
+
+    for (q = ngx_queue_head(router->sh->map.regex);
+         q != ngx_queue_sentinel(router->sh->map.regex);
+         q = ngx_queue_next(q))
+    {
+        regex = ngx_queue_data(q, ngx_mapping_regex_t, queue);
+
+        if (ngx_memn2cmp(api.data, regex->pattern.data,
+                         api.len, regex->pattern.len) == 0) {
+            retval = NGX_DECLINED;
+            goto done;
+        }
+    }
+
+    regex = compile_shm_regex(router->sh->slab, api, backend);
+    if (regex == NULL)
+        goto done;
+
+    ngx_queue_insert_tail(router->sh->map.regex, &regex->queue);
+
+    retval = NGX_OK;
+
+done:
+
+    ngx_rwlock_unlock(router->sh->map.lock);
+
+    return retval;
+}
+
+
+ngx_int_t
+ngx_api_gateway_router_delete(ngx_http_api_gateway_router_t *router,
+    ngx_str_t api)
+{
+    ngx_mapping_regex_t  *regex;
+    ngx_queue_t          *q;
+    ngx_int_t             retval;
+
+    if (router->sh == NULL) {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                "dynamic router required shared zone "
+                "segment: $var:10m for example ");
+        return NGX_ERROR;
+    }
+
+    ngx_trim(&api);
+
+    ngx_rwlock_wlock(router->sh->map.lock);
+
+    if (api.data[0] != '~') {
+        retval = ngx_trie_delete(router->sh->map.trie, api);
+        goto done;
+    }
+
+    api.data++;
+    api.len--;
+
+    ngx_trim(&api);
+
+    for (q = ngx_queue_head(router->sh->map.regex);
+         q != ngx_queue_sentinel(router->sh->map.regex);
+         q = ngx_queue_next(q))
+    {
+        regex = ngx_queue_data(q, ngx_mapping_regex_t, queue);
+
+        if (ngx_memn2cmp(api.data, regex->pattern.data,
+                         api.len, regex->pattern.len) == 0) {
+
+            ngx_queue_remove(q);
+            free_shm_regex(router->sh->slab, regex);
+
+            retval = NGX_OK;
+
+            goto done;
+        }
+    }
+
+    retval = NGX_DECLINED;
+
+done:
+
+    ngx_rwlock_unlock(router->sh->map.lock);
+
+    return retval;
 }

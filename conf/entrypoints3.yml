@@ -14,7 +14,7 @@ test.be:
       max_fails: 2
       fail_timeout: 30s
     servers:
-      - server 127.0.0.2:3333 max_conns={{server.max_conns}} max_fails={{server.max_fails}} fail_timeout={{server.fail_timeout}};\n
+      - server 127.0.0.2:3333 max_conns={{server.max_conns}} max_fails={{server.max_fails}} fail_timeout={{server.fail_timeout}};
       - server 127.0.0.2:4444 max_conns={{server.max_conns}} max_fails={{server.max_fails}} fail_timeout={{server.fail_timeout}};
 
   - name: be2
@@ -30,7 +30,7 @@ test.be:
       max_fails: 2
       fail_timeout: 30s
     servers:
-      - server 127.0.0.3:3333 max_conns={{server.max_conns}} max_fails={{server.max_fails}} fail_timeout={{server.fail_timeout}};\n
+      - server 127.0.0.3:3333 max_conns={{server.max_conns}} max_fails={{server.max_fails}} fail_timeout={{server.fail_timeout}};
       - server 127.0.0.3:4444 max_conns={{server.max_conns}} max_fails={{server.max_fails}} fail_timeout={{server.fail_timeout}};
 
 test.fe:
