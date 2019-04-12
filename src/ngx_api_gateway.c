@@ -70,6 +70,9 @@ ngx_api_gateway_create_mappings(ngx_cycle_t *cycle,
 
     static ngx_str_t api = ngx_string("api");
 
+    if (router->dynamic)
+        return NGX_OK;
+
     ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "rebuild routes for var=$%V",
             &router->var);
 
@@ -436,6 +439,9 @@ ngx_api_gateway_update(ngx_template_main_conf_t *tmcf,
     }
 
     for (j = 0; j < amcf->routers.nelts; j++) {
+
+        if (router[j]->dynamic)
+            continue;
 
         if (ngx_api_gateway_create_mappings(amcf->cycle, router[j], pool)
                 == NGX_ERROR)

@@ -50,4 +50,9 @@ void ngx_trie_clear(ngx_trie_t *trie);
 
 void ngx_trie_swap(ngx_trie_t *l, ngx_trie_t *r);
 
+typedef ngx_int_t (*ngx_trie_scan_fun_t)(ngx_str_t path, ngx_str_t value,
+    void *data);
+
+ngx_int_t ngx_trie_scan(ngx_trie_t *trie, ngx_trie_scan_fun_t f, void *data);
+
 #endif /* NGX_TRIE_H */

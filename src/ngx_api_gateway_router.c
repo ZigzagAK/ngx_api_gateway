@@ -265,6 +265,141 @@ free_shm_regex(ngx_slab_pool_t *slab, ngx_mapping_regex_t *regex)
 }
 
 
+static ngx_int_t
+ngx_api_gateway_router_set_internal(ngx_http_api_gateway_router_t *router,
+    ngx_str_t backend, ngx_str_t api, ngx_flag_t nostore);
+
+
+static ngx_int_t
+ngx_api_gateway_router_delete_internal(ngx_http_api_gateway_router_t *router,
+    ngx_str_t api, ngx_flag_t nostore);
+
+
+static ngx_int_t
+append(ngx_str_t api, ngx_str_t backend, void *data)
+{
+    ngx_file_t  *file = data;
+
+    if (NGX_ERROR == ngx_write_file(file, api.data, api.len, file->offset)
+        || NGX_ERROR == ngx_write_file(file, (u_char *) ";", 1, file->offset)
+        || NGX_ERROR == ngx_write_file(file, backend.data, backend.len, file->offset)
+        || NGX_ERROR == ngx_write_file(file, (u_char *) "\n", 1, file->offset)) {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, ngx_errno,
+                      ngx_write_fd_n " \"%V\" failed", &file->name);
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_api_gateway_router_load(ngx_http_api_gateway_router_t *router)
+{
+    ngx_file_t            file;
+    ngx_int_t             retval = NGX_ERROR;
+    ngx_str_t             buf;
+    ngx_keyval_t          next, line;
+    ngx_queue_t          *q;
+    ngx_mapping_regex_t  *regex;
+
+    if (router->filename.data == NULL)
+        return NGX_OK;
+
+    file.name = router->filename;
+    file.log = ngx_cycle->log;
+
+    file.fd = ngx_open_file(router->filename.data, NGX_FILE_RDONLY,
+                            NGX_FILE_CREATE_OR_OPEN, NGX_FILE_DEFAULT_ACCESS);
+
+    if (file.fd == NGX_INVALID_FILE) {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, ngx_errno,
+                      ngx_open_file_n " \"%V\" failed", &router->filename);
+        return NGX_ERROR;
+    }
+
+    if (ngx_fd_info(file.fd, &file.info) == NGX_FILE_ERROR) {
+        ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, ngx_errno,
+                      ngx_fd_info_n " \"%V\" failed", &router->filename);
+        goto done;
+    }
+
+    buf.len = ngx_file_size(&file.info);
+    if (buf.len == 0) {
+        retval = NGX_OK;
+        goto done;
+    }
+
+    buf.data = ngx_palloc(ngx_cycle->pool, buf.len);
+    if (buf.data == NULL) {
+        ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, 0, "no memory");
+        goto done; 
+    }
+
+    if (ngx_read_file(&file, buf.data, buf.len, 0) == NGX_ERROR) {
+        ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, ngx_errno,
+                      ngx_fd_info_n " \"%V\" read failed", &router->filename);
+        goto done;
+    }
+
+    retval = NGX_OK;
+
+    do {
+        next = ngx_split(buf, LF);
+        if (next.key.data == NULL)
+            break;
+
+        line = ngx_split(next.key, ';');
+
+        if (line.key.data != NULL) {
+            
+            if (line.value.len == 0)
+                ngx_api_gateway_router_delete_internal(router, line.key, 1);
+            else
+                retval = ngx_api_gateway_router_set_internal(router, line.value,
+                    line.key, 1);
+        }
+
+        buf = next.value;
+
+    } while (buf.len != 0 && retval != NGX_ERROR);
+
+    if (retval != NGX_ERROR)
+        retval = NGX_OK;
+
+done:
+
+    ngx_close_file(file.fd);
+
+    file.fd = ngx_open_file(router->filename.data, NGX_FILE_WRONLY,
+                            NGX_FILE_TRUNCATE, NGX_FILE_DEFAULT_ACCESS);
+
+    if (file.fd == NGX_INVALID_FILE) {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, ngx_errno,
+                      ngx_open_file_n " \"%V\" failed", &router->filename);
+        return NGX_ERROR;
+    }
+
+    file.offset = 0;
+
+    if (ngx_trie_scan(router->sh->map.trie, append, &file) == NGX_OK) {
+
+        for (q = ngx_queue_head(router->sh->map.regex);
+             q != ngx_queue_sentinel(router->sh->map.regex);
+             q = ngx_queue_next(q))
+        {
+            regex = ngx_queue_data(q, ngx_mapping_regex_t, queue);
+            if (append(regex->pattern, regex->backend, &file) == NGX_ERROR)
+                break;
+        }
+    }
+
+    ngx_close_file(file.fd);
+
+    return retval;
+}
+
+
 ngx_int_t
 ngx_api_gateway_router_shm_init(ngx_http_api_gateway_router_t *router,
     ngx_http_api_gateway_shctx_t *sh)
@@ -325,7 +460,10 @@ ngx_api_gateway_router_shm_init(ngx_http_api_gateway_router_t *router,
         ngx_slab_free(sh->slab, old.regex);
     }
 
-    return NGX_OK;
+    if (!router->dynamic)
+        return NGX_OK;
+
+    return ngx_api_gateway_router_load(router);
 
 nomem:
 
@@ -404,27 +542,62 @@ done:
 }
 
 
-ngx_int_t
-ngx_api_gateway_router_set(ngx_http_api_gateway_router_t *router,
-    ngx_str_t backend, ngx_str_t api)
+static void
+ngx_api_gateway_router_save(ngx_http_api_gateway_router_t *router,
+    ngx_str_t api, ngx_str_t backend)
 {
-    ngx_int_t             retval = NGX_ERROR;
-    ngx_mapping_regex_t  *regex;
-    ngx_queue_t          *q;
+    ngx_file_t  file;
 
-    if (router->sh == NULL) {
+    if (router->filename.data == NULL)
+        return;
+
+    file.name = router->filename;
+    file.log = ngx_cycle->log;
+
+    file.fd = ngx_open_file(router->filename.data, NGX_FILE_CREATE_OR_OPEN,
+                            NGX_FILE_APPEND, NGX_FILE_DEFAULT_ACCESS);
+
+    if (file.fd == NGX_INVALID_FILE) {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, ngx_errno,
+                      ngx_open_file_n " \"%V\" failed", &router->filename);
+        return;
+    }
+
+    if (NGX_ERROR == ngx_write_file(&file, api.data, api.len, 0)
+        || NGX_ERROR == ngx_write_file(&file, (u_char *) ";", 1, 0)
+        || NGX_ERROR == ngx_write_file(&file, backend.data, backend.len, 0)
+        || NGX_ERROR == ngx_write_file(&file, (u_char *) "\n", 1, 0)) {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, ngx_errno,
+                      ngx_write_fd_n " \"%V\" failed", &router->filename);
+    }
+
+    ngx_close_file(file.fd);
+}
+
+
+static ngx_int_t
+ngx_api_gateway_router_set_internal(ngx_http_api_gateway_router_t *router,
+    ngx_str_t backend, ngx_str_t api, ngx_flag_t nostore)
+{
+    ngx_int_t                        retval = NGX_ERROR;
+    ngx_mapping_regex_t             *regex;
+    ngx_queue_t                     *q;
+    ngx_http_api_gateway_mapping_t  *map;
+
+    if (!router->dynamic) {
         ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
-                "dynamic router requires shared zone "
-                "segment: $var:10m for example ");
+                      "router by var=%V is not dynamic", &router->var);
         return NGX_ERROR;
     }
 
     ngx_trim(&api);
 
-    ngx_rwlock_wlock(router->sh->map.lock);
+    map = &router->sh->map;
+    
+    ngx_rwlock_wlock(map->lock);
 
     if (api.data[0] != '~') {
-        retval = ngx_trie_set(router->sh->map.trie, api, backend);
+        retval = ngx_trie_set(map->trie, api, backend);
         goto done;
     }
 
@@ -433,8 +606,8 @@ ngx_api_gateway_router_set(ngx_http_api_gateway_router_t *router,
 
     ngx_trim(&api);
 
-    for (q = ngx_queue_head(router->sh->map.regex);
-         q != ngx_queue_sentinel(router->sh->map.regex);
+    for (q = ngx_queue_head(map->regex);
+         q != ngx_queue_sentinel(map->regex);
          q = ngx_queue_next(q))
     {
         regex = ngx_queue_data(q, ngx_mapping_regex_t, queue);
@@ -450,39 +623,46 @@ ngx_api_gateway_router_set(ngx_http_api_gateway_router_t *router,
     if (regex == NULL)
         goto done;
 
-    ngx_queue_insert_tail(router->sh->map.regex, &regex->queue);
+    ngx_queue_insert_tail(map->regex, &regex->queue);
 
     retval = NGX_OK;
 
 done:
 
-    ngx_rwlock_unlock(router->sh->map.lock);
+    if (!nostore && retval == NGX_OK)
+        ngx_api_gateway_router_save(router, api, backend);
+
+    ngx_rwlock_unlock(map->lock);
 
     return retval;
 }
 
 
-ngx_int_t
-ngx_api_gateway_router_delete(ngx_http_api_gateway_router_t *router,
-    ngx_str_t api)
+static ngx_int_t
+ngx_api_gateway_router_delete_internal(ngx_http_api_gateway_router_t *router,
+    ngx_str_t api, ngx_flag_t nostore)
 {
-    ngx_mapping_regex_t  *regex;
-    ngx_queue_t          *q;
-    ngx_int_t             retval;
+    ngx_mapping_regex_t             *regex;
+    ngx_queue_t                     *q;
+    ngx_int_t                        retval;
+    ngx_http_api_gateway_mapping_t  *map;
 
-    if (router->sh == NULL) {
+    static ngx_str_t null_backend = ngx_string("");
+    
+    if (!router->dynamic) {
         ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
-                "dynamic router required shared zone "
-                "segment: $var:10m for example ");
+                      "router by var=%V is not dynamic", &router->var);
         return NGX_ERROR;
     }
 
     ngx_trim(&api);
 
-    ngx_rwlock_wlock(router->sh->map.lock);
+    map = &router->sh->map;
+
+    ngx_rwlock_wlock(map->lock);
 
     if (api.data[0] != '~') {
-        retval = ngx_trie_delete(router->sh->map.trie, api);
+        retval = ngx_trie_delete(map->trie, api);
         goto done;
     }
 
@@ -491,8 +671,8 @@ ngx_api_gateway_router_delete(ngx_http_api_gateway_router_t *router,
 
     ngx_trim(&api);
 
-    for (q = ngx_queue_head(router->sh->map.regex);
-         q != ngx_queue_sentinel(router->sh->map.regex);
+    for (q = ngx_queue_head(map->regex);
+         q != ngx_queue_sentinel(map->regex);
          q = ngx_queue_next(q))
     {
         regex = ngx_queue_data(q, ngx_mapping_regex_t, queue);
@@ -513,7 +693,26 @@ ngx_api_gateway_router_delete(ngx_http_api_gateway_router_t *router,
 
 done:
 
-    ngx_rwlock_unlock(router->sh->map.lock);
+    if (!nostore && retval == NGX_OK)
+        ngx_api_gateway_router_save(router, api, null_backend);
+
+    ngx_rwlock_unlock(map->lock);
 
     return retval;
+}
+
+
+ngx_int_t
+ngx_api_gateway_router_set(ngx_http_api_gateway_router_t *router,
+    ngx_str_t backend, ngx_str_t api)
+{
+    return ngx_api_gateway_router_set_internal(router, backend, api, 0);
+}
+
+
+ngx_int_t
+ngx_api_gateway_router_delete(ngx_http_api_gateway_router_t *router,
+    ngx_str_t api)
+{
+    return ngx_api_gateway_router_delete_internal(router, api, 0);
 }

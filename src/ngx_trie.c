@@ -228,11 +228,19 @@ ngx_trie_set(ngx_trie_t *trie, ngx_str_t path, ngx_str_t value)
 
             next = ngx_trie_lookup(node, word[j]);
             if (next == NULL)
-                break;
+                // not found
+                return NGX_DECLINED;
 
         }
 
         if (word[j + 1].data == NULL) {
+
+            if (NULL != next->value.data
+                && NULL != value.data
+                && 0 == ngx_memn2cmp(next->value.data, value.data,
+                                     next->value.len, value.len))
+                // no changes
+                return NGX_DECLINED;
 
             // free old value
 
@@ -397,4 +405,39 @@ ngx_trie_swap(ngx_trie_t *l, ngx_trie_t *r)
     l->pool = tmp.pool;
     l->slab = tmp.slab;
     l->data = tmp.data;
+}
+
+
+static ngx_int_t
+ngx_trie_scan_node(ngx_trie_node_t *parent, ngx_trie_scan_fun_t f, void *data)
+{
+    ngx_rbtree_t       *rbtree = &parent->next;
+    ngx_rbtree_node_t  *node;
+    ngx_trie_node_t    *next;
+
+    if (rbtree->root == rbtree->sentinel)
+        return NGX_OK;
+
+    for (node = ngx_rbtree_min(rbtree->root, rbtree->sentinel);
+         node;
+         node = ngx_rbtree_next(rbtree, node))
+    {
+        next = (ngx_trie_node_t *) node;
+
+        if (next->value.data != NULL)
+            if ((*f)(next->path, next->value, data) == NGX_ERROR)
+                return NGX_ERROR;
+
+        if (ngx_trie_scan_node(next, f, data) == NGX_ERROR)
+            return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+
+ngx_int_t
+ngx_trie_scan(ngx_trie_t *trie, ngx_trie_scan_fun_t f, void *data)
+{
+    return ngx_trie_scan_node(&trie->root, f, data);
 }

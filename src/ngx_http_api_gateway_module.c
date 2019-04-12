@@ -3,6 +3,7 @@
  */
 
 #include <ngx_http.h>
+#include <assert.h>
 
 #include "ngx_api_gateway.h"
 #include "ngx_api_gateway_router.h"
@@ -419,10 +420,13 @@ ngx_api_gateway_router_add_variable(ngx_conf_t *cf, void *data, void *conf)
     ngx_array_t                      *a;
     router_var_ctx_t                 *ctx;
     ngx_str_t                         zone_name;
+    ngx_str_t                         varname;
 
     kv = ngx_split(router->var, ':');
 
-    var = ngx_http_add_variable(cf, &kv.key,
+    varname = kv.key;
+
+    var = ngx_http_add_variable(cf, &varname,
                                 NGX_HTTP_VAR_CHANGEABLE);
     if (var == NULL)
         return NGX_CONF_ERROR;
@@ -446,18 +450,28 @@ ngx_api_gateway_router_add_variable(ngx_conf_t *cf, void *data, void *conf)
     ctx->alcf = alcf;
     ctx->router = router;
 
-    if (kv.value.data == NULL)
-        return NGX_CONF_OK;
+    if (kv.value.data == NULL) {
 
-    size = ngx_parse_size(&kv.value);
+        if (router->dynamic) {
+            ngx_conf_log_error(NGX_LOG_ERR, cf, 0,
+                "dynamic router requires shared zone, var=$%V", &router->var);
+            return NGX_CONF_ERROR;
+        }
+
+        return NGX_CONF_OK;
+    }
+
+    kv = ngx_split(kv.value, ':');
+
+    size = ngx_parse_size(&kv.key);
     if (size == NGX_ERROR)
         return NGX_CONF_ERROR; 
 
-    zone_name.data = ngx_pcalloc(cf->pool, kv.key.len + 32);
+    zone_name.data = ngx_pcalloc(cf->pool, varname.len + 32);
     if (zone_name.data == NULL)
         return NGX_CONF_ERROR;
-    zone_name.len = ngx_sprintf(zone_name.data, "$%V(%0Xd)", &kv.key,
-            zone_name.data) - zone_name.data;
+    zone_name.len = ngx_sprintf(zone_name.data, "$%V(%0Xd)", &varname,
+        router->dynamic ? 0 : zone_name.data) - zone_name.data;
 
     router->zone = ngx_shared_memory_add(cf, &zone_name, size,
         &ngx_http_api_gateway_module);
@@ -465,9 +479,15 @@ ngx_api_gateway_router_add_variable(ngx_conf_t *cf, void *data, void *conf)
     if (router->zone == NULL)
         return NGX_CONF_ERROR;
 
-    router->zone->noreuse = 1;
+    router->filename = kv.value;
+    router->zone->noreuse = !router->dynamic;
     router->zone->data = router;
     router->zone->init = ngx_api_gateway_router_init_shm;
+
+    if (router->filename.data != NULL) {
+        if (ngx_conf_full_name(cf->cycle, &router->filename, 1) != NGX_OK)
+            return NGX_CONF_ERROR;
+    }
 
     return NGX_CONF_OK;
 }
@@ -476,14 +496,22 @@ ngx_api_gateway_router_add_variable(ngx_conf_t *cf, void *data, void *conf)
 static ngx_int_t
 ngx_api_gateway_router_init_shm(ngx_shm_zone_t *zone, void *old)
 {
-    ngx_http_api_gateway_router_t  *conf;
+    ngx_http_api_gateway_router_t  *ctx;
     ngx_http_api_gateway_shctx_t   *sh;
     ngx_slab_pool_t                *slab;
 
-    conf = zone->data;
+    ctx = zone->data;
 
     slab = (ngx_slab_pool_t *) zone->shm.addr;
 
+    if (old != NULL) {
+
+        ctx->sh = slab->data;
+        return NGX_OK;
+    }
+
+    assert(ctx->sh == NULL);
+    
     sh = ngx_slab_calloc(slab, sizeof(ngx_http_api_gateway_shctx_t));
     if (sh == NULL)
         return NGX_ERROR;
@@ -491,9 +519,9 @@ ngx_api_gateway_router_init_shm(ngx_shm_zone_t *zone, void *old)
     sh->slab = slab;
     slab->data = sh;
 
-    ngx_api_gateway_router_shm_init(conf, sh);
+    ctx->sh = sh;
 
-    conf->sh = sh;
+    ngx_api_gateway_router_shm_init(ctx, sh);
 
     return NGX_OK;
 }
@@ -553,7 +581,7 @@ send_no_content(ngx_http_request_t *r)
     ngx_memzero(&cv, sizeof(ngx_http_complex_value_t));
 
     r->header_only = 1;
-    
+
     return ngx_http_send_response(r, NGX_HTTP_NO_CONTENT, NULL, &cv);
 }
 
@@ -598,7 +626,8 @@ ngx_api_gateway_route_set_handler(ngx_http_request_t *r)
         if (ngx_memn2cmp(router[j]->var.data, var.data,
                          var.len, var.len) == 0) {
 
-            if (ngx_api_gateway_router_set(router[j], backend, api) == NGX_OK)
+            if (ngx_api_gateway_router_set(router[j], backend, api)
+                    != NGX_ERROR)
                 return send_no_content(r);
 
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
@@ -660,7 +689,7 @@ ngx_api_gateway_route_delete_handler(ngx_http_request_t *r)
         if (ngx_memn2cmp(router[j]->var.data, var.data,
                          var.len, var.len) == 0) {
 
-            if (ngx_api_gateway_router_delete(router[j], api) == NGX_OK)
+            if (ngx_api_gateway_router_delete(router[j], api) != NGX_ERROR)
                 return send_no_content(r);
 
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
