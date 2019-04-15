@@ -282,8 +282,10 @@ append(ngx_str_t api, ngx_str_t backend, void *data)
 
     if (NGX_ERROR == ngx_write_file(file, api.data, api.len, file->offset)
         || NGX_ERROR == ngx_write_file(file, (u_char *) ";", 1, file->offset)
-        || NGX_ERROR == ngx_write_file(file, backend.data, backend.len, file->offset)
-        || NGX_ERROR == ngx_write_file(file, (u_char *) "\n", 1, file->offset)) {
+        || NGX_ERROR == ngx_write_file(file, backend.data, backend.len,
+                                       file->offset)
+        || NGX_ERROR == ngx_write_file(file, (u_char *) "\n", 1,
+                                       file->offset)) {
         ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, ngx_errno,
                       ngx_write_fd_n " \"%V\" failed", &file->name);
         return NGX_ERROR;
