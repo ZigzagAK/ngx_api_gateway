@@ -47,13 +47,7 @@ static ngx_http_module_t ngx_http_api_gateway_ctx = {
 };
 
 
-#define NGX_ALL_CONF (NGX_HTTP_MAIN_CONF |  \
-                      NGX_HTTP_SRV_CONF  |  \
-                      NGX_HTTP_LOC_CONF  |  \
-                      NGX_HTTP_UPS_CONF  |  \
-                      NGX_HTTP_SIF_CONF  |  \
-                      NGX_HTTP_LIF_CONF  |  \
-                      NGX_HTTP_LMT_CONF)
+#define NGX_ALL_CONF (NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF)
 
 
 static char *

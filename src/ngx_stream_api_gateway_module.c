@@ -22,9 +22,7 @@ static ngx_stream_module_t ngx_stream_api_gateway_ctx = {
 };
 
 
-#define NGX_ALL_CONF (NGX_STREAM_MAIN_CONF |  \
-                      NGX_STREAM_SRV_CONF  |  \
-                      NGX_STREAM_UPS_CONF)
+#define NGX_ALL_CONF (NGX_STREAM_MAIN_CONF|NGX_STREAM_SRV_CONF)
 
 static ngx_command_t  ngx_stream_api_gateway_commands[] = {
 

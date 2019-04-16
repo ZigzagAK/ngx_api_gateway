@@ -755,8 +755,6 @@ ngx_template_parse_entries(yaml_parser_t *parser, ngx_template_t *t)
 
     } while (type != YAML_SEQUENCE_END_EVENT);
 
-    yaml_event_delete(&event);
-
     return NGX_OK;
 
 nomem:
