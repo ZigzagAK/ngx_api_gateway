@@ -395,8 +395,9 @@ ngx_api_gateway_fetch_gw(ngx_cycle_t *cycle, ngx_api_gateway_template_t *t,
     ctx->temp_pool = pool;
     ctx->t = t;
 
-    ngx_http_send_request(pool, GET, &t->url, NULL, 0, NULL, 0, NULL,
-        timeout, ngx_api_gateway_fetch_handler, ctx);
+    if (ngx_http_send_request(pool, GET, &t->url, NULL, 0, NULL, 0, NULL,
+            timeout, ngx_api_gateway_fetch_handler, ctx) == NGX_ERROR)
+            ngx_destroy_pool(pool);
 }
 
 
