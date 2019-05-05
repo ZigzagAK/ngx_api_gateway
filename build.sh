@@ -257,6 +257,7 @@ function build_release() {
   make clean >> $BUILD_LOG 2>>$ERR_LOG
   echo "Configuring release nginx-$VERSION" | tee -a $BUILD_LOG
   ./configure --prefix="$INSTALL_DIR/nginx-$VERSION$SUFFIX" \
+              --with-threads \
               --with-cc-opt="-g -O0 $ADDITIONAL_INCLUDES -Wno-error=unused-value -Wno-error=unused-variable -Wno-error=unused-function" \
               --with-ld-opt="$ADDITIONAL_LIBS" \
               --with-stream \
@@ -372,9 +373,9 @@ function download() {
   download_module https://github.com      openresty   lua-cjson                        master
   download_module https://github.com      openresty   echo-nginx-module                master
   download_module https://github.com      openresty   luajit2                          v2.1-agentzh
-  download_module https://github.com      ZigzagAK    ngx_http_upsync_upstream         tags/1.0.2
-  download_module https://github.com      ZigzagAK    ngx_dynamic_upstream             tags/2.1.1
-  download_module https://github.com      ZigzagAK    ngx_dynamic_healthcheck          tags/1.2.5
+  download_module https://github.com      ZigzagAK    ngx_http_upsync_upstream         tags/1.1.0
+  download_module https://github.com      ZigzagAK    ngx_dynamic_upstream             tags/2.2.0
+  download_module https://github.com      ZigzagAK    ngx_dynamic_healthcheck          2.X.X
 
   cd ..
 }

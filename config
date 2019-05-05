@@ -1,11 +1,12 @@
-ngx_addon_name="ngx_template_module ngx_http_api_gateway_module ngx_stream_api_gateway_module"
+ngx_addon_name="ngx_template_module ngx_http_api_gateway_module ngx_dynamic_conf_module ngx_stream_api_gateway_module"
 
 SRCS="$ngx_addon_dir/src/ngx_api_gateway.c                \
       $ngx_addon_dir/src/ngx_trie.c                       \
       $ngx_addon_dir/src/ngx_http_api_gateway_module.c    \
       $ngx_addon_dir/src/ngx_stream_api_gateway_module.c  \
       $ngx_addon_dir/src/ngx_api_gateway_router.c         \
-      $ngx_addon_dir/src/ngx_regex_shm.c"
+      $ngx_addon_dir/src/ngx_regex_shm.c                  \
+      $ngx_addon_dir/src/ngx_dynamic_conf_module.c"
 
 DEPS="$ngx_addon_dir/src/ngx_trie.h                \
       $ngx_addon_dir/src/ngx_api_gateway.h         \
@@ -23,6 +24,15 @@ if [ "$ngx_module_link" = DYNAMIC ]; then
 
     ngx_module_type=HTTP_AUX_FILTER
     ngx_module_name="ngx_http_api_gateway_module"
+    ngx_module_incs=$REQUIRED_INCS
+    ngx_module_libs=$REQUIRED_LIBS
+    ngx_module_deps="$DEPS"
+    ngx_module_srcs="$SRCS"
+
+    . auto/module
+
+    ngx_module_type=HTTP_AUX_FILTER
+    ngx_module_name="ngx_dynamic_conf_module"
     ngx_module_incs=$REQUIRED_INCS
     ngx_module_libs=$REQUIRED_LIBS
     ngx_module_deps="$DEPS"
@@ -51,7 +61,7 @@ if [ "$ngx_module_link" = DYNAMIC ]; then
 elif [ "$ngx_module_link" = ADDON ]; then
 
     STREAM_MODULES="$STREAM_MODULES ngx_stream_api_gateway_module"
-    HTTP_AUX_FILTER_MODULES="$HTTP_AUX_FILTER_MODULES ngx_http_api_gateway_module"
+    HTTP_AUX_FILTER_MODULES="$HTTP_AUX_FILTER_MODULES ngx_http_api_gateway_module ngx_dynamic_conf_module"
     EVENT_MODULES="$EVENT_MODULES ngx_template_module"
 
     NGX_ADDON_SRCS="$NGX_ADDON_SRCS $SRCS $CORE_MODULE_SRCS"

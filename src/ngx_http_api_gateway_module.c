@@ -28,10 +28,10 @@ static ngx_int_t
 ngx_api_gateway_post_conf(ngx_conf_t *cf);
 
 
-char *
+static char *
 ngx_api_gateway_route_set(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
-char *
+static char *
 ngx_api_gateway_route_delete(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
 
@@ -632,7 +632,7 @@ ngx_api_gateway_route_set_handler(ngx_http_request_t *r)
 }
 
 
-char *
+static char *
 ngx_api_gateway_route_set(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_http_core_loc_conf_t  *clcf;
@@ -694,7 +694,7 @@ ngx_api_gateway_route_delete_handler(ngx_http_request_t *r)
 }
 
 
-char *
+static char *
 ngx_api_gateway_route_delete(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_http_core_loc_conf_t  *clcf;
