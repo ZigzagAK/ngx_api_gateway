@@ -66,7 +66,7 @@ typedef enum {
 } balancer_type;
 
 
-static ngx_str_t methods[2] = {
+static ngx_str_t methods[] = {
     ngx_string(""),
     ngx_string("least_conn;")
 };
@@ -346,6 +346,7 @@ ngx_add_upstream(ngx_dynamic_conf_main_conf_t *dmcf,
          q = ngx_queue_next(q))
     {
         sh = ngx_queue_data(q, ngx_dynamic_upstream_t, queue);
+
         if (u.type == sh->type
             && ngx_memn2cmp(u.name.data, sh->name.data,
                             u.name.len, sh->name.len) == 0) {
@@ -387,6 +388,46 @@ ngx_add_upstream(ngx_dynamic_conf_main_conf_t *dmcf,
         "[%s] add upstream '%V'", u.type == http ? "http" : "stream", &u.name);
 
     return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_delete_upstream(ngx_dynamic_conf_main_conf_t *dmcf,
+    ngx_dynamic_upstream_t u)
+{
+    ngx_dynamic_upstream_t  *sh;
+    ngx_queue_t             *q;
+    ngx_core_conf_t         *ccf;
+
+    ccf = (ngx_core_conf_t *)ngx_get_conf(ngx_cycle->conf_ctx, ngx_core_module);
+
+    ngx_shmtx_lock(&dmcf->shm->slab->mutex);
+
+    for (q = ngx_queue_head(&dmcf->shm->upstreams);
+         q != ngx_queue_sentinel(&dmcf->shm->upstreams);
+         q = ngx_queue_next(q))
+    {
+        sh = ngx_queue_data(q, ngx_dynamic_upstream_t, queue);
+
+        if (u.type == sh->type
+            && ngx_memn2cmp(u.name.data, sh->name.data,
+                            u.name.len, sh->name.len) == 0) {
+
+            sh->count = -ccf->worker_processes;
+
+            ngx_shmtx_unlock(&dmcf->shm->slab->mutex);
+
+            ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
+                "[%s] delete upstream '%V'",
+                u.type == http ? "http" : "stream", &u.name);
+
+            return NGX_OK;
+        }
+    }
+
+    ngx_shmtx_unlock(&dmcf->shm->slab->mutex);
+
+    return NGX_DECLINED;
 }
 
 
@@ -616,41 +657,179 @@ ngx_stream_upstream_new(ngx_dynamic_upstream_t *u)
 }
 
 
-static ngx_int_t
+static void
 ngx_http_upstream_delete(ngx_dynamic_upstream_t *u)
 {
-    return NGX_OK;
+    ngx_http_upstream_main_conf_t   *umcf;
+    ngx_http_upstream_srv_conf_t   **uscfp;
+    ngx_uint_t                       i, j;
+
+    umcf = ngx_http_cycle_get_module_main_conf(ngx_cycle,
+        ngx_http_upstream_module);
+    uscfp = umcf->upstreams.elts;
+
+    for (i = 0, j = 0; i < umcf->upstreams.nelts; i++)
+        if (ngx_memn2cmp(u->name.data, uscfp[i]->host.data,
+                         u->name.len, uscfp[i]->host.len) != 0)
+            uscfp[j++] = uscfp[i];
+
+    umcf->upstreams.nelts = j;
 }
 
 
-static ngx_int_t
+static void
 ngx_stream_upstream_delete(ngx_dynamic_upstream_t *u)
 {
+    ngx_stream_upstream_main_conf_t   *umcf;
+    ngx_stream_upstream_srv_conf_t   **uscfp;
+    ngx_uint_t                         i, j;
+
+    umcf = ngx_stream_cycle_get_module_main_conf(ngx_cycle,
+        ngx_stream_upstream_module);
+    uscfp = umcf->upstreams.elts;
+
+    for (i = 0, j = 0; i < umcf->upstreams.nelts; i++)
+        if (ngx_memn2cmp(u->name.data, uscfp[i]->host.data,
+                         u->name.len, uscfp[i]->host.len) != 0)
+            uscfp[j++] = uscfp[i];
+
+    umcf->upstreams.nelts = j;
+}
+
+
+static ngx_flag_t
+ngx_http_upstream_free(ngx_slab_pool_t *slab, ngx_dynamic_upstream_t *u)
+{
+    ngx_http_upstream_rr_peers_t  *primary, *peers;
+    ngx_http_upstream_rr_peer_t   *peer, *tmp;
+
+    primary = (ngx_http_upstream_rr_peers_t *) u->peers;
+
+    ngx_rwlock_rlock(&primary->rwlock);
+    
+    for (peers = primary; peers != NULL; peers = peers->next) {
+
+        for (peer = peers->peer; peer != NULL; peer = peer->next) {
+
+            if (peer->conns != 0) {
+
+                ngx_rwlock_unlock(&primary->rwlock);
+                return NGX_AGAIN;
+            }
+        }
+    }
+
+    // no references
+
+    for (peers = primary; peers != NULL; peers = peers->next) {
+
+        for (peer = peers->peer; peer != NULL;) {
+
+            tmp = peer;
+            peer = peer->next;
+
+            ngx_slab_free_locked(slab, tmp->name.data);
+            ngx_slab_free_locked(slab, tmp->server.data);
+            ngx_slab_free_locked(slab, tmp->sockaddr);
+            ngx_slab_free_locked(slab, tmp);
+        }
+    }
+
+    primary->peer = NULL;
+    primary->single = 0;
+
+    if (primary->next != NULL) {
+        ngx_slab_free_locked(slab, primary->next);
+        primary->next = NULL;
+    }
+
+    // 8 bytes leaked
+
+    ngx_rwlock_unlock(&primary->rwlock);
+
     return NGX_OK;
 }
 
 
-typedef ngx_flag_t (*upstream_exists_pt)(ngx_dynamic_upstream_t *u);
-typedef ngx_int_t  (*upstream_new_pt)(ngx_dynamic_upstream_t *u);
-typedef ngx_int_t  (*upstream_delete_pt)(ngx_dynamic_upstream_t *u);
+static ngx_flag_t
+ngx_stream_upstream_free(ngx_slab_pool_t *slab, ngx_dynamic_upstream_t *u)
+{
+    ngx_stream_upstream_rr_peers_t  *primary, *peers;
+    ngx_stream_upstream_rr_peer_t   *peer, *tmp;
 
+    primary = (ngx_stream_upstream_rr_peers_t *) u->peers;
+
+    ngx_rwlock_rlock(&primary->rwlock);
+    
+    for (peers = primary; peers != NULL; peers = peers->next) {
+
+        for (peer = peers->peer; peer != NULL; peer = peer->next) {
+
+            if (peer->conns != 0) {
+
+                ngx_rwlock_unlock(&primary->rwlock);
+                return NGX_AGAIN;
+            }
+        }
+    }
+
+    // no references
+
+    for (peers = primary; peers != NULL; peers = peers->next) {
+
+        for (peer = peers->peer; peer != NULL;) {
+
+            tmp = peer;
+            peer = peer->next;
+
+            ngx_slab_free_locked(slab, tmp->name.data);
+            ngx_slab_free_locked(slab, tmp->server.data);
+            ngx_slab_free_locked(slab, tmp->sockaddr);
+            ngx_slab_free_locked(slab, tmp);
+        }
+    }
+
+    primary->peer = NULL;
+    primary->single = 0;
+
+    if (primary->next != NULL) {
+        ngx_slab_free_locked(slab, primary->next);
+        primary->next = NULL;
+    }
+
+    // 8 bytes leaked
+
+    ngx_rwlock_unlock(&primary->rwlock);
+
+    return NGX_OK;
+}
+
+
+typedef ngx_flag_t  (*upstream_exists_pt)(ngx_dynamic_upstream_t *u);
+typedef ngx_int_t   (*upstream_new_pt)(ngx_dynamic_upstream_t *u);
+typedef void        (*upstream_delete_pt)(ngx_dynamic_upstream_t *u);
+typedef ngx_flag_t  (*upstream_free_pt)(ngx_slab_pool_t *slab,
+                                        ngx_dynamic_upstream_t *u);
 
 typedef struct {
     upstream_exists_pt  exists;
     upstream_new_pt     new;
     upstream_delete_pt  delete;
+    upstream_free_pt    try_free;
 } upstream_fun_t;
 
 
-static upstream_fun_t funcs[2] = {
+static upstream_fun_t funcs[] = {
 
-    {  ngx_http_upstream_exists,
-       ngx_http_upstream_new,
-       ngx_http_upstream_delete },
+    { ngx_http_upstream_exists,
+      ngx_http_upstream_new,
+      ngx_http_upstream_delete,
+      ngx_http_upstream_free },
 
-    {  ngx_stream_upstream_exists,
-       ngx_stream_upstream_new,
-       ngx_stream_upstream_delete }
+    { ngx_stream_upstream_exists,
+      ngx_stream_upstream_new,
+      ngx_stream_upstream_delete,
+      ngx_stream_upstream_free }
 
 };
 
@@ -679,26 +858,49 @@ ngx_dynamic_conf_handler_sync(ngx_event_t *ev)
     ngx_shmtx_lock(&dmcf->shm->slab->mutex);
 
     for (q = ngx_queue_head(&dmcf->shm->upstreams);
-         q != ngx_queue_sentinel(&dmcf->shm->upstreams);
-         q = ngx_queue_next(q))
+         q != ngx_queue_sentinel(&dmcf->shm->upstreams);)
     {
         u = ngx_queue_data(q, ngx_dynamic_upstream_t, queue);
         exists = funcs[u->type].exists(u);
+
         if (udata->init)
             u->zone = dmcf->zone;
+
         if ((u->count > 0 || udata->init) && !exists) {
-            if (funcs[u->type].new(u) == NGX_OK) {
-                ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0,
-                    "[%s] #%d add upstream '%V'",
-                    u->type == http ? "http" : "stream", ngx_worker, &u->name);
-            }
+
+            funcs[u->type].new(u);
+            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0,
+                "[%s] #%d add upstream '%V'",
+                u->type == http ? "http" : "stream", ngx_worker, &u->name);
+
             if (u->count > 0)
                 u->count--;
+
+            q = ngx_queue_next(q);
+
         } else if (u->count < 0 && exists) {
+
             funcs[u->type].delete(u);
             ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0,
                 "[%s] #%d delete upstream '%V'",
                 u->type == http ? "http" : "stream", ngx_worker, &u->name);
+
+            u->count++;
+
+            q = ngx_queue_next(q);
+
+        } else if (u->count == 0 && !exists) {
+
+            q = ngx_queue_next(q);
+
+            if (funcs[u->type].try_free(dmcf->shm->slab, u) == NGX_OK) {
+
+                ngx_queue_remove(&u->queue);
+                ngx_slab_free_locked(dmcf->shm->slab, u);
+            } 
+        } else {
+
+            q = ngx_queue_next(q);
         }
     }
 
@@ -764,6 +966,14 @@ send_response(ngx_http_request_t *r, ngx_uint_t status,
 }
 
 
+static ngx_int_t
+send_header(ngx_http_request_t *r, ngx_uint_t status)
+{
+    static const char *empty = "";  
+    return send_response(r, status, empty);
+}
+
+
 static ngx_str_t
 get_var_str(ngx_http_request_t *r, const char *v, const char *def)
 {
@@ -810,10 +1020,8 @@ ngx_dynamic_conf_upstream_add_handler(ngx_http_request_t *r)
 
     dmcf = ngx_http_get_module_main_conf(r, ngx_dynamic_conf_module);
 
-    if (r->method != NGX_HTTP_POST) {
-        r->headers_out.status = NGX_HTTP_NOT_ALLOWED;
-        return ngx_http_send_header(r);
-    }
+    if (r->method != NGX_HTTP_POST)
+        return send_header(r, NGX_HTTP_NOT_ALLOWED);
 
     u.name = get_var_str(r, "arg_name", NULL);
     if (u.name.data == NULL)
@@ -874,11 +1082,9 @@ ngx_dynamic_conf_upstream_add_handler(ngx_http_request_t *r)
 
     switch (ngx_add_upstream(dmcf, u)) {
         case NGX_OK:
-            r->headers_out.status = NGX_HTTP_NO_CONTENT;
-            return ngx_http_send_header(r);
+            return send_header(r, NGX_HTTP_NO_CONTENT);
         case NGX_DECLINED:
-            r->headers_out.status = NGX_HTTP_NOT_MODIFIED;
-            return ngx_http_send_header(r);
+            return send_header(r, NGX_HTTP_NOT_MODIFIED);
     }
 
     return send_response(r, NGX_HTTP_INTERNAL_SERVER_ERROR, "no memory");
@@ -901,22 +1107,18 @@ ngx_dynamic_conf_upstream_add(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 static ngx_int_t
 ngx_dynamic_conf_upstream_delete_handler(ngx_http_request_t *r)
 {
-/*    ngx_dynamic_conf_main_conf_t  *dmcf;
-    ngx_str_t                      name;
-    upstream_type                  type;
+    ngx_dynamic_conf_main_conf_t  *dmcf;
+    ngx_dynamic_upstream_t         u;
 
     dmcf = ngx_http_get_module_main_conf(r, ngx_dynamic_conf_module);
 
-    if (r->method != NGX_HTTP_DELETE) {
-        r->headers_out.status = NGX_HTTP_NOT_ALLOWED;
-        return ngx_http_send_header(r);
-    }
+    if (r->method != NGX_HTTP_DELETE)
+        return send_header(r, NGX_HTTP_NOT_ALLOWED);
 
-    name = get_var_str(r, "arg_name", NULL);
-    if (name.data == NULL)
+    u.name = get_var_str(r, "arg_name", NULL);
+    if (u.name.data == NULL)
         return send_response(r, NGX_HTTP_BAD_REQUEST,  "name required");
 
-    type = get_var_str(r, "arg_stream", NULL).data != NULL ? stream : http;
     u.type = get_var_str(r, "arg_stream", NULL).data != NULL ? stream : http;
     switch (u.type) {
         case http:
@@ -930,7 +1132,10 @@ ngx_dynamic_conf_upstream_delete_handler(ngx_http_request_t *r)
                     "stream module is not configured");
             break;
     }
-*/
+
+    if (ngx_delete_upstream(dmcf, u) == NGX_OK)
+        return send_header(r, NGX_HTTP_NO_CONTENT);
+    
     return send_response(r, NGX_HTTP_NOT_FOUND, "upstream not found");
 }
 
