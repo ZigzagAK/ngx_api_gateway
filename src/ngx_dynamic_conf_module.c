@@ -52,6 +52,7 @@ typedef struct {
     ngx_shm_zone_t          *zone;
     ngx_dynamic_conf_shm_t  *shm;
     ngx_url_t                default_addr;
+    ngx_str_t                filename;
 } ngx_dynamic_conf_main_conf_t;
 
 
@@ -99,6 +100,13 @@ static ngx_command_t  ngx_dynamic_conf_commands[] = {
       offsetof(ngx_dynamic_conf_main_conf_t, size),
       NULL },
 
+    { ngx_string("dynamic_conf_filename"),
+      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_str_slot,
+      NGX_HTTP_MAIN_CONF_OFFSET,
+      offsetof(ngx_dynamic_conf_main_conf_t, filename),
+      NULL },
+
     { ngx_string("upstream_add"),
       NGX_HTTP_LOC_CONF|NGX_CONF_NOARGS,
       ngx_dynamic_conf_upstream_add,
@@ -132,6 +140,10 @@ ngx_module_t ngx_dynamic_conf_module = {
     NULL,                              /* exit master */
     NGX_MODULE_V1_PADDING
 };
+
+
+static void
+ngx_upstream_load(ngx_dynamic_conf_main_conf_t *dmcf);
 
 
 static void *
@@ -177,6 +189,8 @@ ngx_init_shm_zone(ngx_shm_zone_t *zone, void *old)
         slab->data = dmcf->shm;
 
         ngx_queue_init(&dmcf->shm->upstreams);
+
+        ngx_upstream_load(dmcf);
     }
 
     return NGX_OK;
@@ -196,141 +210,210 @@ ngx_str_shm(ngx_slab_pool_t *slab, ngx_str_t *s)
 }
 
 
-static void *
-ngx_http_rr_peers_new(ngx_dynamic_conf_main_conf_t *dmcf,
-    ngx_dynamic_upstream_t u)
+static ngx_str_t *
+ngx_str_shm_copy(ngx_slab_pool_t *slab, ngx_str_t *s)
 {
-    ngx_http_upstream_rr_peers_t  *peers;
-    ngx_http_upstream_rr_peer_t   *peer;
-    ngx_slab_pool_t               *slab = dmcf->shm->slab;
-
-    peers = ngx_slab_calloc_locked(slab, sizeof(ngx_http_upstream_rr_peers_t));
-    if (peers == NULL)
-        return NULL;
-
-    peer = ngx_slab_calloc_locked(slab, sizeof(ngx_http_upstream_rr_peer_t));
-    if (peer == NULL) {
-        ngx_slab_free_locked(slab, peers);
-        return NULL;
+    ngx_str_t  *sh;
+    sh = ngx_slab_alloc_locked(slab, sizeof(ngx_str_t));
+    if (sh != NULL) {
+        *sh = ngx_str_shm(slab, s);
+        if (sh->data == NULL) {
+            ngx_slab_free_locked(slab, sh);
+            sh = NULL;
+        }
     }
-
-    peers->name = ngx_slab_calloc_locked(slab, sizeof(ngx_str_t));
-    if (peers->name == NULL) {
-        ngx_slab_free_locked(slab, peers);
-        return NULL;
-    }
-    *peers->name = ngx_str_shm(slab, &u.name);
-    peers->number = 1;
-    peers->shpool = slab;
-    peers->single = 1;
-    peers->total_weight = 1;
-    peers->weighted = 1;
-    peers->peer = peer;
-
-    peer->current_weight = 0;
-    peer->effective_weight = 1;
-    peer->server = ngx_str_shm(slab, &dmcf->default_addr.url);
-    peer->name = ngx_str_shm(slab, &dmcf->default_addr.url);
-    peer->weight = 1;
-    peer->max_conns = u.max_conns;
-    peer->max_fails = u.max_fails;
-    peer->fail_timeout = u.fail_timeout;
-    peer->down = 1;
-
-    peer->sockaddr = ngx_slab_calloc_locked(slab, dmcf->default_addr.socklen);
-    if (peer->sockaddr == NULL) {
-        ngx_slab_free_locked(slab, peer->server.data);
-        ngx_slab_free_locked(slab, peer->name.data);
-        ngx_slab_free_locked(slab, peers);
-        return NULL;
-    }
-
-    ngx_memcpy(peer->sockaddr, &dmcf->default_addr.sockaddr,
-        dmcf->default_addr.socklen);
-
-    return peers;
+    return sh;
 }
 
 
-static void *
-ngx_stream_rr_peers_new(ngx_dynamic_conf_main_conf_t *dmcf,
-    ngx_dynamic_upstream_t u)
+static ngx_uint_t
+ngx_split_string(ngx_str_t *a, ngx_uint_t max,
+    u_char *start, u_char *end, char sep)
 {
-    ngx_stream_upstream_rr_peers_t  *peers;
-    ngx_stream_upstream_rr_peer_t   *peer;
-    ngx_slab_pool_t                 *slab = dmcf->shm->slab;
+    u_char      *pos = start;
+    ngx_uint_t   i;
 
-    peers = ngx_slab_calloc_locked(slab,
-        sizeof(ngx_stream_upstream_rr_peers_t));
-    if (peers == NULL)
-        return NULL;
-
-    peer = ngx_slab_calloc_locked(slab, sizeof(ngx_stream_upstream_rr_peer_t));
-    if (peer == NULL) {
-        ngx_slab_free_locked(slab, peers);
-        return NULL;
+    for (i = 0; i < max && start != NULL; i++) {
+        pos = ngx_strlchr(start, end, sep);
+        if (pos != NULL) {
+            a[i].data = start;
+            a[i].len = pos - start;
+            start = ++pos;
+        } else
+            start = NULL;
     }
 
-    peers->name = ngx_slab_calloc_locked(slab, sizeof(ngx_str_t));
-    if (peers->name == NULL) {
-        ngx_slab_free_locked(slab, peers);
-        return NULL;
-    }
-    *peers->name = ngx_str_shm(slab, &u.name);
-    peers->number = 1;
-    peers->shpool = slab;
-    peers->single = 1;
-    peers->total_weight = 1;
-    peers->weighted = 1;
-    peers->peer = peer;
-
-    peer->current_weight = 0;
-    peer->effective_weight = 1;
-    peer->server = ngx_str_shm(slab, &dmcf->default_addr.url);
-    peer->name = ngx_str_shm(slab, &dmcf->default_addr.url);
-    peer->weight = 1;
-    peer->max_conns = u.max_conns;
-    peer->max_fails = u.max_fails;
-    peer->fail_timeout = u.fail_timeout;
-    peer->down = 1;
-
-    peer->sockaddr = ngx_slab_calloc_locked(slab, dmcf->default_addr.socklen);
-    if (peer->sockaddr == NULL) {
-        ngx_slab_free_locked(slab, peer->server.data);
-        ngx_slab_free_locked(slab, peer->name.data);
-        ngx_slab_free_locked(slab, peers);
-        return NULL;
-    }
-
-    ngx_memcpy(peer->sockaddr, &dmcf->default_addr.sockaddr,
-        dmcf->default_addr.socklen);
-
-    return peers;
+    return i;
 }
 
 
-static void *
-ngx_rr_peers_new(ngx_dynamic_conf_main_conf_t *dmcf,
-    ngx_dynamic_upstream_t u)
+static void
+ngx_upstream_load(ngx_dynamic_conf_main_conf_t *dmcf)
 {
-    void  *peers = NULL;
+    ngx_file_t               file;
+    ngx_dynamic_upstream_t  *sh;
+    u_char                  *start, *pos, *end, *name;
+    ngx_str_t                a[9];
 
-    switch (u.type) {
-        case http:
-            peers = ngx_http_rr_peers_new(dmcf, u);
+    if (dmcf->filename.data == NULL)
+        return;
+
+    file.name = dmcf->filename;
+    file.log = ngx_cycle->log;
+    file.offset = 0;
+
+    file.fd = ngx_open_file(file.name.data, NGX_FILE_RDONLY,
+                            NGX_FILE_OPEN, NGX_FILE_DEFAULT_ACCESS);
+
+    if (file.fd == NGX_INVALID_FILE)
+        return;
+
+    if (ngx_fd_info(file.fd, &file.info) == NGX_FILE_ERROR) {
+        ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, ngx_errno,
+                      ngx_fd_info_n " \"%V\" failed", &file.name);
+        goto done;
+    }
+
+    start = pos = ngx_palloc(ngx_cycle->pool, file.info.st_size);
+    if (start == NULL) {
+        ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, 0,
+                      "ngx_upstream_load() alloc failed");
+        goto done;
+    }
+    end = start + file.info.st_size;
+
+    if (ngx_read_file(&file, start, file.info.st_size, 0) == NGX_ERROR) {
+        ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, ngx_errno,
+                      ngx_read_fd_n " \"%V\" failed", &file.name);
+        goto done;
+    }
+
+    while (start != NULL) {
+
+        pos = ngx_strlchr(start, end, LF);
+        if (pos == NULL)
             break;
 
-        case stream:
-            peers = ngx_stream_rr_peers_new(dmcf, u);
-            break;
+        sh = ngx_slab_calloc_locked(dmcf->shm->slab,
+            sizeof(ngx_dynamic_upstream_t));
+        if (sh == NULL) {
+            ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, 0,
+                          "ngx_upstream_load() alloc failed");
+            goto done;
+        }
+
+        // parse name
+
+        name = start;
+        start = ngx_strlchr(start, end, ',');
+        if (start == NULL) {
+            ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, 0,
+                          "ngx_dynamic_conf:parse() invalud structure");
+            goto done;
+        }
+
+        sh->name.data = ngx_slab_alloc_locked(dmcf->shm->slab, start - name);
+        if (sh->name.data == NULL) {
+            ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, 0,
+                          "ngx_upstream_load() alloc failed");
+            goto done;
+        }
+        sh->name.len = start - name;
+        ngx_memcpy(sh->name.data, name, sh->name.len);
+
+        *pos = ',';
+
+        if (9 != ngx_split_string(a, 9, ++start, end, ',')) {
+            ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, 0,
+                          "ngx_upstream_load() invalud structure");
+            goto done;
+        }
+
+        sh->type = ngx_atoi(a[0].data, a[0].len);
+        sh->method = ngx_atoi(a[1].data, a[1].len);
+        sh->keepalive = ngx_atoi(a[2].data, a[2].len);
+        sh->keepalive_requests = ngx_atoi(a[3].data, a[3].len);
+        sh->keepalive_timeout = ngx_atoi(a[4].data, a[4].len);
+        sh->max_fails = ngx_atoi(a[5].data, a[5].len);
+        sh->max_conns = ngx_atoi(a[6].data, a[6].len);
+        sh->fail_timeout = ngx_atoi(a[7].data, a[7].len);
+        sh->dns_update = ngx_atoi(a[8].data, a[8].len);
+
+        sh->zone = dmcf->zone;
+
+        ngx_queue_insert_tail(&dmcf->shm->upstreams, &sh->queue);
+
+        start = pos + 1;
     }
 
-    return peers;
+done:
+
+    ngx_close_file(file.fd);
 }
 
+
+static void
+ngx_upstream_save(ngx_dynamic_conf_main_conf_t *dmcf)
+{
+    ngx_file_t               file;
+    ngx_dynamic_upstream_t  *sh;
+    ngx_queue_t             *q;
+    u_char                   buf[4096];
+    u_char                  *start, *last, *end;
+
+    if (dmcf->filename.data == NULL)
+        return;
+
+    start = last = buf;
+    end = start + sizeof(buf);
+
+    file.offset = 0;
+    file.name = dmcf->filename;
+    file.log = ngx_cycle->log;
+
+    file.fd = ngx_open_file(file.name.data, NGX_FILE_WRONLY, NGX_FILE_TRUNCATE,
+                            NGX_FILE_DEFAULT_ACCESS);
+
+    if (file.fd == NGX_INVALID_FILE) {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, ngx_errno,
+                      ngx_open_file_n " \"%V\" failed", &file.name);
+        return;
+    }
+
+    for (q = ngx_queue_head(&dmcf->shm->upstreams);
+         q != ngx_queue_sentinel(&dmcf->shm->upstreams);
+         q = ngx_queue_next(q))
+    {
+        sh = ngx_queue_data(q, ngx_dynamic_upstream_t, queue);
+        if (sh->count < 0)
+            continue;
+        last = ngx_snprintf(start, end - start,
+                            "%V,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
+                            &sh->name,
+                            sh->type,
+                            sh->method,
+                            sh->keepalive,
+                            sh->keepalive_requests,
+                            sh->keepalive_timeout,
+                            sh->max_fails,
+                            sh->max_conns,
+                            sh->fail_timeout,
+                            sh->dns_update);
+        if (ngx_write_file(&file, start, last - start, file.offset)
+                == NGX_ERROR) {
+            ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, ngx_errno,
+                          ngx_write_fd_n " \"%V\" failed", &file.name);
+            goto done;
+        }
+    }
+
+done:
+
+    ngx_close_file(file.fd);
+}
 
 static ngx_int_t
-ngx_add_upstream(ngx_dynamic_conf_main_conf_t *dmcf,
+ngx_upstream_add(ngx_dynamic_conf_main_conf_t *dmcf,
     ngx_dynamic_upstream_t u)
 {
     ngx_dynamic_upstream_t  *sh;
@@ -371,16 +454,11 @@ ngx_add_upstream(ngx_dynamic_conf_main_conf_t *dmcf,
         return NGX_ERROR;
     }
     sh->count = ccf->worker_processes;
-    sh->peers = ngx_rr_peers_new(dmcf, u);
-
-    if (sh->peers == NULL) {
-        ngx_slab_free_locked(dmcf->shm->slab, sh->name.data);
-        ngx_slab_free_locked(dmcf->shm->slab, sh);
-        ngx_shmtx_unlock(&dmcf->shm->slab->mutex);
-        return NGX_ERROR;
-    }
+    sh->peers = NULL;
 
     ngx_queue_insert_tail(&dmcf->shm->upstreams, &sh->queue);
+
+    ngx_upstream_save(dmcf);
 
     ngx_shmtx_unlock(&dmcf->shm->slab->mutex);
 
@@ -392,7 +470,7 @@ ngx_add_upstream(ngx_dynamic_conf_main_conf_t *dmcf,
 
 
 static ngx_int_t
-ngx_delete_upstream(ngx_dynamic_conf_main_conf_t *dmcf,
+ngx_upstream_delete(ngx_dynamic_conf_main_conf_t *dmcf,
     ngx_dynamic_upstream_t u)
 {
     ngx_dynamic_upstream_t  *sh;
@@ -414,6 +492,8 @@ ngx_delete_upstream(ngx_dynamic_conf_main_conf_t *dmcf,
                             u.name.len, sh->name.len) == 0) {
 
             sh->count = -ccf->worker_processes;
+
+            ngx_upstream_save(dmcf);
 
             ngx_shmtx_unlock(&dmcf->shm->slab->mutex);
 
@@ -447,6 +527,9 @@ ngx_dynamic_conf_init_main_conf(ngx_conf_t *cf, void *conf)
 
     dmcf->zone->init = ngx_init_shm_zone;
     dmcf->zone->data = dmcf;
+
+    if (ngx_conf_full_name(cf->cycle, &dmcf->filename, 1) != NGX_OK)
+        return NGX_CONF_ERROR;
 
     return NGX_CONF_OK;
 }
@@ -547,14 +630,15 @@ get_upstream_conf(ngx_dynamic_upstream_t *u)
     b->pos = b->start;
     b->last = ngx_snprintf(b->start, ngx_pagesize * 10,
             "upstream %V {"
-            "server 0.0.0.0:1 down;"
             "%V"
             "keepalive %d;"
             "keepalive_requests %d;"
             "keepalive_timeout %d;"
+            "dynamic_state_file %V.peers;"
             "dns_update %d;"
             "}}", &u->name, &methods[u->method],
             u->keepalive, u->keepalive_requests, u->keepalive_timeout,
+            &u->name,
             u->dns_update);
     b->end = b->last;
     b->temporary = 1;
@@ -575,6 +659,110 @@ nomem:
 }
 
 
+static void
+ngx_slab_free_safe(ngx_slab_pool_t *shpool, void *p)
+{
+    if (p != NULL)
+        ngx_slab_free_locked(shpool, p);
+}
+
+
+static ngx_http_upstream_rr_peer_t *
+ngx_http_upstream_copy_peer(ngx_slab_pool_t *slab,
+    ngx_http_upstream_rr_peer_t *src)
+{
+    ngx_http_upstream_rr_peer_t  *dst;
+
+    dst = ngx_slab_alloc_locked(slab, sizeof(ngx_http_upstream_rr_peer_t));
+    if (dst == NULL)
+        return NULL;
+
+    ngx_memcpy(dst, src, sizeof(ngx_http_upstream_rr_peer_t));
+
+    dst->sockaddr = NULL;
+    dst->name.data = NULL;
+    dst->server.data = NULL;
+
+    dst->sockaddr = ngx_slab_alloc_locked(slab, src->socklen);
+    if (dst->sockaddr == NULL)
+        goto failed;
+
+    ngx_memcpy(dst->sockaddr, src->sockaddr, src->socklen);
+
+    dst->name = ngx_str_shm(slab, &src->name);
+    if (dst->name.data == NULL)
+        goto failed;
+
+    dst->server = ngx_str_shm(slab, &src->server);
+    if (dst->server.data == NULL)
+        goto failed;
+
+    return dst;
+
+failed:
+
+    ngx_slab_free_safe(slab, dst->server.data);
+    ngx_slab_free_safe(slab, dst->name.data);
+    ngx_slab_free_safe(slab, dst->sockaddr);
+    ngx_slab_free_safe(slab, dst);
+
+    return NULL;
+}
+
+
+static ngx_http_upstream_rr_peers_t *
+ngx_http_upstream_copy_peers(ngx_slab_pool_t *slab, ngx_str_t *name,
+    ngx_http_upstream_rr_peers_t *src)
+{
+    ngx_http_upstream_rr_peer_t   *peer, **peerp;
+    ngx_http_upstream_rr_peers_t  *dst;
+
+    dst = ngx_slab_alloc_locked(slab, sizeof(ngx_http_upstream_rr_peers_t));
+    if (dst == NULL)
+        return NULL;
+
+    ngx_memcpy(dst, src, sizeof(ngx_http_upstream_rr_peers_t));
+
+    dst->shpool = slab;
+    dst->name = name;
+
+    for (peerp = &dst->peer; *peerp; peerp = &peer->next) {
+
+        peer = ngx_http_upstream_copy_peer(slab, *peerp);
+        if (peer == NULL)
+            return NULL;
+
+        *peerp = peer;
+    }
+
+    if (src->next != NULL) {
+
+        dst->next = ngx_http_upstream_copy_peers(slab, name, src->next);
+        if (dst->next == NULL)
+            return NULL;
+    }
+
+    return dst;
+}
+
+
+static ngx_http_upstream_rr_peers_t *
+ngx_http_upstream_copy(ngx_slab_pool_t *slab,
+    ngx_http_upstream_srv_conf_t *uscf)
+{
+    ngx_str_t                     *name;
+    ngx_http_upstream_rr_peers_t  *peers;
+
+    peers = uscf->peer.data;
+
+    name = ngx_str_shm_copy(slab, peers->name);
+    if (name == NULL)
+        return NULL;
+
+    return ngx_http_upstream_copy_peers(slab, name, peers);
+}
+
+
 static ngx_int_t
 ngx_http_upstream_new(ngx_dynamic_upstream_t *u)
 {
@@ -582,6 +770,9 @@ ngx_http_upstream_new(ngx_dynamic_upstream_t *u)
     ngx_http_upstream_srv_conf_t      *uscf, **uscfp;
     ngx_conf_t                        *cf;
     ngx_http_conf_ctx_t                ctx;
+    ngx_slab_pool_t                   *slab;
+
+    slab = (ngx_slab_pool_t *) u->zone->shm.addr;
 
     cf = get_upstream_conf(u);
     if (cf == NULL)
@@ -607,12 +798,114 @@ ngx_http_upstream_new(ngx_dynamic_upstream_t *u)
         return NGX_ERROR;
     }
 
+    if (u->peers == NULL) {
+        u->peers = ngx_http_upstream_copy(slab, uscf);
+        if (u->peers == NULL)
+            return NGX_ERROR;
+    }
+
     uscf->peer.data = u->peers;
     uscf->shm_zone = u->zone;
 
     ngx_destroy_pool(cf->temp_pool);
 
     return NGX_OK;
+}
+
+
+static ngx_stream_upstream_rr_peer_t *
+ngx_stream_upstream_copy_peer(ngx_slab_pool_t *slab,
+    ngx_stream_upstream_rr_peer_t *src)
+{
+    ngx_stream_upstream_rr_peer_t  *dst;
+
+    dst = ngx_slab_alloc_locked(slab, sizeof(ngx_stream_upstream_rr_peer_t));
+    if (dst == NULL)
+        return NULL;
+
+    ngx_memcpy(dst, src, sizeof(ngx_stream_upstream_rr_peer_t));
+
+    dst->sockaddr = NULL;
+    dst->name.data = NULL;
+    dst->server.data = NULL;
+
+    dst->sockaddr = ngx_slab_alloc_locked(slab, src->socklen);
+    if (dst->sockaddr == NULL)
+        goto failed;
+
+    ngx_memcpy(dst->sockaddr, src->sockaddr, src->socklen);
+
+    dst->name = ngx_str_shm(slab, &src->name);
+    if (dst->name.data == NULL)
+        goto failed;
+
+    dst->server = ngx_str_shm(slab, &src->server);
+    if (dst->server.data == NULL)
+        goto failed;
+
+    return dst;
+
+failed:
+
+    ngx_slab_free_safe(slab, dst->server.data);
+    ngx_slab_free_safe(slab, dst->name.data);
+    ngx_slab_free_safe(slab, dst->sockaddr);
+    ngx_slab_free_safe(slab, dst);
+
+    return NULL;
+}
+
+
+static ngx_stream_upstream_rr_peers_t *
+ngx_stream_upstream_copy_peers(ngx_slab_pool_t *slab, ngx_str_t *name,
+    ngx_stream_upstream_rr_peers_t *src)
+{
+    ngx_stream_upstream_rr_peer_t   *peer, **peerp;
+    ngx_stream_upstream_rr_peers_t  *dst;
+
+    dst = ngx_slab_alloc_locked(slab, sizeof(ngx_stream_upstream_rr_peers_t));
+    if (dst == NULL)
+        return NULL;
+
+    ngx_memcpy(dst, src, sizeof(ngx_stream_upstream_rr_peers_t));
+
+    dst->shpool = slab;
+    dst->name = name;
+
+    for (peerp = &dst->peer; *peerp; peerp = &peer->next) {
+
+        peer = ngx_stream_upstream_copy_peer(slab, *peerp);
+        if (peer == NULL)
+            return NULL;
+
+        *peerp = peer;
+    }
+
+    if (src->next != NULL) {
+
+        dst->next = ngx_stream_upstream_copy_peers(slab, name, src->next);
+        if (dst->next == NULL)
+            return NULL;
+    }
+
+    return dst;
+}
+
+
+static ngx_stream_upstream_rr_peers_t *
+ngx_stream_upstream_copy(ngx_slab_pool_t *slab,
+    ngx_stream_upstream_srv_conf_t *uscf)
+{
+    ngx_str_t                       *name;
+    ngx_stream_upstream_rr_peers_t  *peers;
+
+    peers = uscf->peer.data;
+
+    name = ngx_str_shm_copy(slab, peers->name);
+    if (name == NULL)
+        return NULL;
+
+    return ngx_stream_upstream_copy_peers(slab, name, peers);
 }
 
 
@@ -623,6 +916,9 @@ ngx_stream_upstream_new(ngx_dynamic_upstream_t *u)
     ngx_stream_upstream_srv_conf_t   *uscf, **uscfp;
     ngx_conf_t                       *cf;
     ngx_stream_conf_ctx_t             ctx;
+    ngx_slab_pool_t                  *slab;
+
+    slab = (ngx_slab_pool_t *) u->zone->shm.addr;
 
     cf = get_upstream_conf(u);
     if (cf == NULL)
@@ -646,6 +942,12 @@ ngx_stream_upstream_new(ngx_dynamic_upstream_t *u)
         umcf->upstreams.nelts--;
         ngx_destroy_pool(cf->temp_pool);
         return NGX_ERROR;
+    }
+
+    if (u->peers == NULL) {
+        u->peers = ngx_stream_upstream_copy(slab, uscf);
+        if (u->peers == NULL)
+            return NGX_ERROR;
     }
 
     uscf->peer.data = u->peers;
@@ -1080,7 +1382,7 @@ ngx_dynamic_conf_upstream_add_handler(ngx_http_request_t *r)
 
     u.zone = dmcf->zone;
 
-    switch (ngx_add_upstream(dmcf, u)) {
+    switch (ngx_upstream_add(dmcf, u)) {
         case NGX_OK:
             return send_header(r, NGX_HTTP_NO_CONTENT);
         case NGX_DECLINED:
@@ -1109,6 +1411,7 @@ ngx_dynamic_conf_upstream_delete_handler(ngx_http_request_t *r)
 {
     ngx_dynamic_conf_main_conf_t  *dmcf;
     ngx_dynamic_upstream_t         u;
+    ngx_str_t                      fname;
 
     dmcf = ngx_http_get_module_main_conf(r, ngx_dynamic_conf_module);
 
@@ -1133,8 +1436,17 @@ ngx_dynamic_conf_upstream_delete_handler(ngx_http_request_t *r)
             break;
     }
 
-    if (ngx_delete_upstream(dmcf, u) == NGX_OK)
+    if (ngx_upstream_delete(dmcf, u) == NGX_OK) {
+        fname.data = ngx_pcalloc(r->pool, u.name.len + 8);
+        if (fname.data != NULL) {
+            fname.len = ngx_snprintf(fname.data, u.name.len + 8,
+                                     "%V.peers", &u.name) - fname.data;
+            if (ngx_get_full_name(r->pool,
+                    (ngx_str_t *) &ngx_cycle->conf_prefix, &fname) == NGX_OK)
+                ngx_delete_file(fname.data);
+        }
         return send_header(r, NGX_HTTP_NO_CONTENT);
+    }
     
     return send_response(r, NGX_HTTP_NOT_FOUND, "upstream not found");
 }
