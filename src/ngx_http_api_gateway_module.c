@@ -418,7 +418,7 @@ ngx_api_gateway_router_add_variable(ngx_conf_t *cf, void *data, void *conf)
 
     kv = ngx_split(router->var, ':');
 
-    varname = kv.key;
+    router->var = varname = kv.key;
 
     var = ngx_http_add_variable(cf, &varname,
                                 NGX_HTTP_VAR_CHANGEABLE);
@@ -441,6 +441,8 @@ ngx_api_gateway_router_add_variable(ngx_conf_t *cf, void *data, void *conf)
     if (ctx == NULL)
         return NGX_CONF_ERROR; 
 
+    router->cycle = cf->cycle;
+
     ctx->alcf = alcf;
     ctx->router = router;
 
@@ -455,9 +457,7 @@ ngx_api_gateway_router_add_variable(ngx_conf_t *cf, void *data, void *conf)
         return NGX_CONF_OK;
     }
 
-    kv = ngx_split(kv.value, ':');
-
-    size = ngx_parse_size(&kv.key);
+    size = ngx_parse_size(&kv.value);
     if (size == NGX_ERROR)
         return NGX_CONF_ERROR; 
 
@@ -473,15 +473,9 @@ ngx_api_gateway_router_add_variable(ngx_conf_t *cf, void *data, void *conf)
     if (router->zone == NULL)
         return NGX_CONF_ERROR;
 
-    router->filename = kv.value;
     router->zone->noreuse = !router->dynamic;
     router->zone->data = router;
     router->zone->init = ngx_api_gateway_router_init_shm;
-
-    if (router->filename.data != NULL) {
-        if (ngx_conf_full_name(cf->cycle, &router->filename, 1) != NGX_OK)
-            return NGX_CONF_ERROR;
-    }
 
     return NGX_CONF_OK;
 }

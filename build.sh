@@ -21,7 +21,7 @@ DIR="$(pwd)"
 DIAG_DIR="diag"
 VCS_PATH=${DIR%/*/*}
 
-VERSION="1.15.10"
+VERSION="1.16.0"
 PCRE_VERSION="8.40"
 ZLIB_VERSION="1.2.11"
 
@@ -49,6 +49,7 @@ export JIT_PREFIX="$BUILD_DIR/deps/luajit"
 export ZLIB_PREFIX="$BUILD_DIR/deps/zlib"
 export PCRE_PREFIX="$BUILD_DIR/deps/pcre"
 export YAML_PREFIX="$BUILD_DIR/deps/yaml"
+export SQLITE_PREFIX="$BUILD_DIR/deps/sqlite"
 
 export LUAJIT_INC="$JIT_PREFIX/usr/local/include/luajit-2.1"
 export LUAJIT_LIB="$JIT_PREFIX/usr/local/lib"
@@ -195,6 +196,19 @@ function build_zlib() {
   echo "Build ZLIB" | tee -a $BUILD_LOG
   cd zlib-$ZLIB_VERSION
   ./configure --prefix="$ZLIB_PREFIX" --libdir="$ZLIB_PREFIX/lib" >> $BUILD_LOG 2>>$ERR_LOG
+  make -j 8 >> $BUILD_LOG 2>>$ERR_LOG
+  r=$?
+  if [ $r -ne 0 ]; then
+    exit $r
+  fi
+  make install >> $BUILD_LOG 2>>$ERR_LOG
+  cd ..
+}
+
+function build_sqlite() {
+  echo "Build SQLite" | tee -a $BUILD_LOG
+  cd sqlite-autoconf-3280000
+  ./configure --disable-tcl --prefix="$SQLITE_PREFIX" --libdir="$SQLITE_PREFIX/lib" >> $BUILD_LOG 2>>$ERR_LOG
   make -j 8 >> $BUILD_LOG 2>>$ERR_LOG
   r=$?
   if [ $r -ne 0 ]; then
@@ -361,9 +375,11 @@ function download() {
 
   cd downloads
 
-  download_dep http://nginx.org/download                                           nginx     $VERSION           tar.gz
-  download_dep http://ftp.cs.stanford.edu/pub/exim/pcre                            pcre      $PCRE_VERSION      tar.gz
-  download_dep http://zlib.net                                                     zlib      $ZLIB_VERSION      tar.gz
+  download_dep http://nginx.org/download                                           nginx           $VERSION           tar.gz
+  download_dep http://ftp.cs.stanford.edu/pub/exim/pcre                            pcre            $PCRE_VERSION      tar.gz
+  download_dep http://zlib.net                                                     zlib            $ZLIB_VERSION      tar.gz
+  download_dep https://www.sqlite.org/2019                                         sqlite-autoconf 3280000            tar.gz
+
 
   download_module https://github.com      yaml        libyaml                          tags/0.2.2
 
@@ -374,7 +390,7 @@ function download() {
   download_module https://github.com      openresty   echo-nginx-module                master
   download_module https://github.com      openresty   luajit2                          v2.1-agentzh
   download_module https://github.com      ZigzagAK    ngx_http_upsync_upstream         tags/1.1.0
-  download_module https://github.com      ZigzagAK    ngx_dynamic_upstream             tags/2.2.0
+  download_module https://github.com      ZigzagAK    ngx_dynamic_upstream             tags/2.3.0
   download_module https://github.com      ZigzagAK    ngx_dynamic_healthcheck          2.X.X
 
   cd ..
@@ -442,6 +458,9 @@ function build() {
   if [ $build_deps -eq 1 ] || [ ! -e deps/yaml ]; then
     build_yaml
   fi
+  if [ $build_deps -eq 1 ] || [ ! -e deps/sqlite ]; then
+    build_sqlite
+  fi
 
   build_cJSON
 
@@ -456,6 +475,8 @@ function build() {
   install_files "$PCRE_PREFIX/lib/libpcreposix.$shared*"     lib
 
   install_files "$YAML_PREFIX/lib/libyaml*.$shared*"         lib
+
+  install_files "$SQLITE_PREFIX/lib/libsqlite*.$shared*"     lib
 
   chmod 755 $(find $INSTALL_DIR/nginx-$VERSION$SUFFIX/lib -name "*.$shared*")
 

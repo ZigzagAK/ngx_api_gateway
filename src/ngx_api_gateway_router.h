@@ -39,7 +39,7 @@ typedef struct {
     ngx_shm_zone_t                  *zone;
     ngx_http_api_gateway_shctx_t    *sh;
     ngx_flag_t                       dynamic;
-    ngx_str_t                        filename;
+    ngx_cycle_t                     *cycle;
 } ngx_http_api_gateway_router_t;
 
 typedef struct {

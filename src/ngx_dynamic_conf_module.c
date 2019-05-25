@@ -5,6 +5,8 @@
 #include <ngx_http.h>
 #include <ngx_stream.h>
 
+#include "ngx_api_gateway_cfg.h"
+
 
 static void *
 ngx_dynamic_conf_create_main_conf(ngx_conf_t *cf);
@@ -40,6 +42,10 @@ static char *
 ngx_dynamic_conf_upstream_delete(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 
+static char *
+ngx_dynamic_conf_upstream_list(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf);
+
 
 typedef struct {
     ngx_slab_pool_t  *slab;
@@ -52,7 +58,7 @@ typedef struct {
     ngx_shm_zone_t          *zone;
     ngx_dynamic_conf_shm_t  *shm;
     ngx_url_t                default_addr;
-    ngx_str_t                filename;
+    ngx_cycle_t             *cycle;
 } ngx_dynamic_conf_main_conf_t;
 
 
@@ -63,13 +69,15 @@ typedef enum {
 
 typedef enum {
     roundrobin = 0,
-    leastconn
+    leastconn,
+    iphash
 } balancer_type;
 
 
 static ngx_str_t methods[] = {
     ngx_string(""),
-    ngx_string("least_conn;")
+    ngx_string("least_conn;"),
+    ngx_string("ip_hash;")
 };
 
 
@@ -100,13 +108,6 @@ static ngx_command_t  ngx_dynamic_conf_commands[] = {
       offsetof(ngx_dynamic_conf_main_conf_t, size),
       NULL },
 
-    { ngx_string("dynamic_conf_filename"),
-      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
-      ngx_conf_set_str_slot,
-      NGX_HTTP_MAIN_CONF_OFFSET,
-      offsetof(ngx_dynamic_conf_main_conf_t, filename),
-      NULL },
-
     { ngx_string("upstream_add"),
       NGX_HTTP_LOC_CONF|NGX_CONF_NOARGS,
       ngx_dynamic_conf_upstream_add,
@@ -117,6 +118,13 @@ static ngx_command_t  ngx_dynamic_conf_commands[] = {
     { ngx_string("upstream_delete"),
       NGX_HTTP_LOC_CONF|NGX_CONF_NOARGS,
       ngx_dynamic_conf_upstream_delete,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL },
+
+    { ngx_string("upstream_list"),
+      NGX_HTTP_LOC_CONF|NGX_CONF_NOARGS,
+      ngx_dynamic_conf_upstream_list,
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
       NULL },
@@ -142,10 +150,6 @@ ngx_module_t ngx_dynamic_conf_module = {
 };
 
 
-static void
-ngx_upstream_load(ngx_dynamic_conf_main_conf_t *dmcf);
-
-
 static void *
 ngx_dynamic_conf_create_main_conf(ngx_conf_t *cf)
 {
@@ -164,7 +168,50 @@ ngx_dynamic_conf_create_main_conf(ngx_conf_t *cf)
 
     ngx_parse_url(cf->pool, &dmcf->default_addr);
 
+    dmcf->cycle = cf->cycle;
+
     return dmcf;
+}
+
+
+static ngx_int_t
+upstream_add(ngx_api_gateway_cfg_upstream_t *u, void *ctxp)
+{
+    ngx_dynamic_conf_main_conf_t  *dmcf = ctxp;
+    ngx_dynamic_upstream_t        *sh;
+
+    sh = ngx_slab_calloc_locked(dmcf->shm->slab,
+        sizeof(ngx_dynamic_upstream_t));
+    if (sh == NULL) {
+        ngx_log_error(NGX_LOG_EMERG, dmcf->cycle->log, 0,
+                      "ngx_upstream_load() alloc failed");
+        return NGX_ERROR;
+    }
+
+    sh->name.data = ngx_slab_alloc_locked(dmcf->shm->slab, u->name.len);
+    if (sh->name.data == NULL) {
+        ngx_log_error(NGX_LOG_EMERG, dmcf->cycle->log, 0,
+                      "ngx_upstream_load() alloc failed");
+        return NGX_ERROR;
+    }
+    sh->name.len = u->name.len;
+    ngx_memcpy(sh->name.data, u->name.data, sh->name.len);
+
+    sh->type = u->type;
+    sh->method = u->method;
+    sh->keepalive = u->keepalive;
+    sh->keepalive_requests = u->keepalive_requests;
+    sh->keepalive_timeout = u->keepalive_timeout;
+    sh->max_fails = u->max_fails;
+    sh->max_conns = u->max_conns;
+    sh->fail_timeout = u->fail_timeout;
+    sh->dns_update = u->dns_update;
+
+    sh->zone = dmcf->zone;
+
+    ngx_queue_insert_tail(&dmcf->shm->upstreams, &sh->queue);
+
+    return NGX_OK;
 }
 
 
@@ -190,7 +237,7 @@ ngx_init_shm_zone(ngx_shm_zone_t *zone, void *old)
 
         ngx_queue_init(&dmcf->shm->upstreams);
 
-        ngx_upstream_load(dmcf);
+        ngx_api_gateway_cfg_upstreams(dmcf->cycle, upstream_add, dmcf);
     }
 
     return NGX_OK;
@@ -226,199 +273,14 @@ ngx_str_shm_copy(ngx_slab_pool_t *slab, ngx_str_t *s)
 }
 
 
-static ngx_uint_t
-ngx_split_string(ngx_str_t *a, ngx_uint_t max,
-    u_char *start, u_char *end, char sep)
-{
-    u_char      *pos = start;
-    ngx_uint_t   i;
-
-    for (i = 0; i < max && start != NULL; i++) {
-        pos = ngx_strlchr(start, end, sep);
-        if (pos != NULL) {
-            a[i].data = start;
-            a[i].len = pos - start;
-            start = ++pos;
-        } else
-            start = NULL;
-    }
-
-    return i;
-}
-
-
-static void
-ngx_upstream_load(ngx_dynamic_conf_main_conf_t *dmcf)
-{
-    ngx_file_t               file;
-    ngx_dynamic_upstream_t  *sh;
-    u_char                  *start, *pos, *end, *name;
-    ngx_str_t                a[9];
-
-    if (dmcf->filename.data == NULL)
-        return;
-
-    file.name = dmcf->filename;
-    file.log = ngx_cycle->log;
-    file.offset = 0;
-
-    file.fd = ngx_open_file(file.name.data, NGX_FILE_RDONLY,
-                            NGX_FILE_OPEN, NGX_FILE_DEFAULT_ACCESS);
-
-    if (file.fd == NGX_INVALID_FILE)
-        return;
-
-    if (ngx_fd_info(file.fd, &file.info) == NGX_FILE_ERROR) {
-        ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, ngx_errno,
-                      ngx_fd_info_n " \"%V\" failed", &file.name);
-        goto done;
-    }
-
-    start = pos = ngx_palloc(ngx_cycle->pool, file.info.st_size);
-    if (start == NULL) {
-        ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, 0,
-                      "ngx_upstream_load() alloc failed");
-        goto done;
-    }
-    end = start + file.info.st_size;
-
-    if (ngx_read_file(&file, start, file.info.st_size, 0) == NGX_ERROR) {
-        ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, ngx_errno,
-                      ngx_read_fd_n " \"%V\" failed", &file.name);
-        goto done;
-    }
-
-    while (start != NULL) {
-
-        pos = ngx_strlchr(start, end, LF);
-        if (pos == NULL)
-            break;
-
-        sh = ngx_slab_calloc_locked(dmcf->shm->slab,
-            sizeof(ngx_dynamic_upstream_t));
-        if (sh == NULL) {
-            ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, 0,
-                          "ngx_upstream_load() alloc failed");
-            goto done;
-        }
-
-        // parse name
-
-        name = start;
-        start = ngx_strlchr(start, end, ',');
-        if (start == NULL) {
-            ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, 0,
-                          "ngx_dynamic_conf:parse() invalud structure");
-            goto done;
-        }
-
-        sh->name.data = ngx_slab_alloc_locked(dmcf->shm->slab, start - name);
-        if (sh->name.data == NULL) {
-            ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, 0,
-                          "ngx_upstream_load() alloc failed");
-            goto done;
-        }
-        sh->name.len = start - name;
-        ngx_memcpy(sh->name.data, name, sh->name.len);
-
-        *pos = ',';
-
-        if (9 != ngx_split_string(a, 9, ++start, end, ',')) {
-            ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, 0,
-                          "ngx_upstream_load() invalud structure");
-            goto done;
-        }
-
-        sh->type = ngx_atoi(a[0].data, a[0].len);
-        sh->method = ngx_atoi(a[1].data, a[1].len);
-        sh->keepalive = ngx_atoi(a[2].data, a[2].len);
-        sh->keepalive_requests = ngx_atoi(a[3].data, a[3].len);
-        sh->keepalive_timeout = ngx_atoi(a[4].data, a[4].len);
-        sh->max_fails = ngx_atoi(a[5].data, a[5].len);
-        sh->max_conns = ngx_atoi(a[6].data, a[6].len);
-        sh->fail_timeout = ngx_atoi(a[7].data, a[7].len);
-        sh->dns_update = ngx_atoi(a[8].data, a[8].len);
-
-        sh->zone = dmcf->zone;
-
-        ngx_queue_insert_tail(&dmcf->shm->upstreams, &sh->queue);
-
-        start = pos + 1;
-    }
-
-done:
-
-    ngx_close_file(file.fd);
-}
-
-
-static void
-ngx_upstream_save(ngx_dynamic_conf_main_conf_t *dmcf)
-{
-    ngx_file_t               file;
-    ngx_dynamic_upstream_t  *sh;
-    ngx_queue_t             *q;
-    u_char                   buf[4096];
-    u_char                  *start, *last, *end;
-
-    if (dmcf->filename.data == NULL)
-        return;
-
-    start = last = buf;
-    end = start + sizeof(buf);
-
-    file.offset = 0;
-    file.name = dmcf->filename;
-    file.log = ngx_cycle->log;
-
-    file.fd = ngx_open_file(file.name.data, NGX_FILE_WRONLY, NGX_FILE_TRUNCATE,
-                            NGX_FILE_DEFAULT_ACCESS);
-
-    if (file.fd == NGX_INVALID_FILE) {
-        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, ngx_errno,
-                      ngx_open_file_n " \"%V\" failed", &file.name);
-        return;
-    }
-
-    for (q = ngx_queue_head(&dmcf->shm->upstreams);
-         q != ngx_queue_sentinel(&dmcf->shm->upstreams);
-         q = ngx_queue_next(q))
-    {
-        sh = ngx_queue_data(q, ngx_dynamic_upstream_t, queue);
-        if (sh->count < 0)
-            continue;
-        last = ngx_snprintf(start, end - start,
-                            "%V,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
-                            &sh->name,
-                            sh->type,
-                            sh->method,
-                            sh->keepalive,
-                            sh->keepalive_requests,
-                            sh->keepalive_timeout,
-                            sh->max_fails,
-                            sh->max_conns,
-                            sh->fail_timeout,
-                            sh->dns_update);
-        if (ngx_write_file(&file, start, last - start, file.offset)
-                == NGX_ERROR) {
-            ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, ngx_errno,
-                          ngx_write_fd_n " \"%V\" failed", &file.name);
-            goto done;
-        }
-    }
-
-done:
-
-    ngx_close_file(file.fd);
-}
-
 static ngx_int_t
 ngx_upstream_add(ngx_dynamic_conf_main_conf_t *dmcf,
     ngx_dynamic_upstream_t u)
 {
-    ngx_dynamic_upstream_t  *sh;
-    ngx_queue_t             *q;
-    ngx_core_conf_t         *ccf;
+    ngx_dynamic_upstream_t         *sh;
+    ngx_queue_t                    *q;
+    ngx_core_conf_t                *ccf;
+    ngx_api_gateway_cfg_upstream_t  cfg;
 
     ccf = (ngx_core_conf_t *)ngx_get_conf(ngx_cycle->conf_ctx, ngx_core_module);
 
@@ -458,7 +320,18 @@ ngx_upstream_add(ngx_dynamic_conf_main_conf_t *dmcf,
 
     ngx_queue_insert_tail(&dmcf->shm->upstreams, &sh->queue);
 
-    ngx_upstream_save(dmcf);
+    cfg.name = u.name;
+    cfg.type = u.type;
+    cfg.method = u.method;
+    cfg.keepalive = u.keepalive;
+    cfg.keepalive_requests = u.keepalive_requests;
+    cfg.keepalive_timeout = u.keepalive_timeout;
+    cfg.max_fails = u.max_fails;
+    cfg.max_conns = u.max_conns;
+    cfg.fail_timeout = u.fail_timeout;
+    cfg.dns_update = u.dns_update;
+
+    ngx_api_gateway_cfg_upstream_add(&cfg);
 
     ngx_shmtx_unlock(&dmcf->shm->slab->mutex);
 
@@ -489,11 +362,12 @@ ngx_upstream_delete(ngx_dynamic_conf_main_conf_t *dmcf,
 
         if (u.type == sh->type
             && ngx_memn2cmp(u.name.data, sh->name.data,
-                            u.name.len, sh->name.len) == 0) {
+                            u.name.len, sh->name.len) == 0
+            && sh->count == 0) {
 
             sh->count = -ccf->worker_processes;
 
-            ngx_upstream_save(dmcf);
+            ngx_api_gateway_cfg_upstream_delete(u.name, u.type);
 
             ngx_shmtx_unlock(&dmcf->shm->slab->mutex);
 
@@ -527,9 +401,6 @@ ngx_dynamic_conf_init_main_conf(ngx_conf_t *cf, void *conf)
 
     dmcf->zone->init = ngx_init_shm_zone;
     dmcf->zone->data = dmcf;
-
-    if (ngx_conf_full_name(cf->cycle, &dmcf->filename, 1) != NGX_OK)
-        return NGX_CONF_ERROR;
 
     return NGX_CONF_OK;
 }
@@ -1045,7 +916,7 @@ ngx_http_upstream_free(ngx_slab_pool_t *slab, ngx_dynamic_upstream_t *u)
         primary->next = NULL;
     }
 
-    // 8 bytes leaked
+    // leaked: peers & peers->name
 
     ngx_rwlock_unlock(&primary->rwlock);
 
@@ -1099,7 +970,7 @@ ngx_stream_upstream_free(ngx_slab_pool_t *slab, ngx_dynamic_upstream_t *u)
         primary->next = NULL;
     }
 
-    // 8 bytes leaked
+    // leaked: peers & peers->name
 
     ngx_rwlock_unlock(&primary->rwlock);
 
@@ -1334,9 +1205,11 @@ ngx_dynamic_conf_upstream_add_handler(ngx_http_request_t *r)
         u.method = roundrobin;
     else if (ngx_strncmp(method.data, "leastconn", method.len) == 0)
         u.method = leastconn;
+    else if (ngx_strncmp(method.data, "iphash", method.len) == 0)
+        u.method = iphash;
     else
         return send_response(r, NGX_HTTP_BAD_REQUEST,
-            "bad method (roundrobin, leastconn)");
+            "bad method (roundrobin, leastconn, iphash)");
 
     u.type = get_var_str(r, "arg_stream", NULL).data != NULL ? stream : http;
     switch (u.type) {
@@ -1353,8 +1226,9 @@ ngx_dynamic_conf_upstream_add_handler(ngx_http_request_t *r)
     }
 
     u.dns_update = get_var_num(r, "arg_dns_update", 60);
-    if (u.dns_update == NGX_ERROR)
-        return send_response(r, NGX_HTTP_BAD_REQUEST, "bad dns_update");
+    if (u.dns_update < 1 || u.dns_update > 3600)
+        return send_response(r, NGX_HTTP_BAD_REQUEST,
+                             "bad dns_update [1,3600]");
 
     u.keepalive = get_var_num(r, "arg_keepalive", 1);
     if (u.keepalive == NGX_ERROR)
@@ -1460,6 +1334,126 @@ ngx_dynamic_conf_upstream_delete(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     clcf = (ngx_http_core_loc_conf_t *) ngx_http_conf_get_module_loc_conf(cf,
         ngx_http_core_module);
     clcf->handler = ngx_dynamic_conf_upstream_delete_handler;
+
+    return NGX_CONF_OK;
+}
+
+
+static ngx_str_t  json = ngx_string("application/json");
+
+static ngx_int_t
+ngx_dynamic_conf_upstream_list_handler(ngx_http_request_t *r)
+{
+    ngx_dynamic_upstream_t        *sh;
+    ngx_queue_t                   *q;
+    ngx_dynamic_conf_main_conf_t  *dmcf;
+    ngx_chain_t                   *out, start;
+    off_t                          content_length = 0;
+    ngx_int_t                      rc;
+
+    static ngx_str_t upstream_type_text[] = {
+        ngx_string("http"),
+        ngx_string("stream")
+    };
+
+    static ngx_str_t methods_text[] = {
+        ngx_string("roundrobin"),
+        ngx_string("least_conn"),
+        ngx_string("ip_hash")
+    };
+
+    dmcf = ngx_http_get_module_main_conf(r, ngx_dynamic_conf_module);
+
+    if (r->method != NGX_HTTP_GET)
+        return send_header(r, NGX_HTTP_NOT_ALLOWED);
+
+    ngx_memzero(&start, sizeof(ngx_chain_t));
+    out = &start;
+
+    ngx_shmtx_lock(&dmcf->shm->slab->mutex);
+
+    for (q = ngx_queue_head(&dmcf->shm->upstreams);
+         q != ngx_queue_sentinel(&dmcf->shm->upstreams);
+         q = ngx_queue_next(q))
+    {
+        sh = ngx_queue_data(q, ngx_dynamic_upstream_t, queue);
+
+        if (sh->count < 0)
+            continue;
+
+        out->next = ngx_pcalloc(r->pool, sizeof(ngx_chain_t));
+        if (out->next == NULL) {
+            ngx_shmtx_unlock(&dmcf->shm->slab->mutex);
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+
+        out->next->buf = ngx_create_temp_buf(r->pool, 1024);
+        if (out->next->buf == NULL) {
+            ngx_shmtx_unlock(&dmcf->shm->slab->mutex);
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+
+        out = out->next;
+
+        out->buf->last = ngx_snprintf(out->buf->start,
+            out->buf->end - out->buf->start,
+            "{"
+                "\"name\":\"%V\","
+                "\"type\":\"%V\","
+                "\"method\":\"%V\","
+                "\"keepalive\":%d,"
+                "\"keepalive_requests\":%d,"
+                "\"keepalive_timeout\":%d,"
+                "\"max_conns\":%d,"
+                "\"max_fails\":%d,"
+                "\"fail_timeout\":%d,"
+                "\"dns_update\":%d"
+            "},", &sh->name,
+                 &upstream_type_text[sh->type],
+                 &methods_text[sh->method],
+                 sh->keepalive, sh->keepalive_requests, sh->keepalive_timeout,
+                 sh->max_conns, sh->max_fails, sh->fail_timeout,
+                 sh->dns_update);
+
+        content_length += out->buf->last - out->buf->start;
+    }
+
+    ngx_shmtx_unlock(&dmcf->shm->slab->mutex);
+
+    if (start.next == NULL)
+        send_response(r, NGX_HTTP_OK, "[]");
+
+    start.buf = ngx_create_temp_buf(r->pool, 8);
+    if (start.buf == NULL)
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+
+    *start.buf->last++ = '[';
+    *(out->buf->last - 1) = ']';
+
+    out->buf->last_in_chain = 1;
+    out->buf->last_buf = (r == r->main) ? 1 : 0;
+
+    r->headers_out.status = NGX_HTTP_OK;
+    r->headers_out.content_type = json;
+    r->headers_out.content_length_n = content_length + 1;
+
+    rc = ngx_http_send_header(r);
+
+    if (rc == NGX_ERROR || rc > NGX_OK)
+        return rc;
+
+    return ngx_http_output_filter(r, &start);
+}
+
+
+char *
+ngx_dynamic_conf_upstream_list(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_http_core_loc_conf_t  *clcf;
+
+    clcf = (ngx_http_core_loc_conf_t *) ngx_http_conf_get_module_loc_conf(cf,
+        ngx_http_core_module);
+    clcf->handler = ngx_dynamic_conf_upstream_list_handler;
 
     return NGX_CONF_OK;
 }
