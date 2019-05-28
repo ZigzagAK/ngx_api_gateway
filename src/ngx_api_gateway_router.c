@@ -266,20 +266,215 @@ free_shm_regex(ngx_slab_pool_t *slab, ngx_mapping_regex_t *regex)
 }
 
 
-static ngx_int_t
-ngx_api_gateway_router_set_internal(ngx_http_api_gateway_router_t *router,
-    ngx_str_t backend, ngx_str_t api, ngx_flag_t nostore);
-
-
-#define NOSTORE 1
-#define STORE   0
-
-
-static ngx_int_t
-route_add(ngx_str_t api, ngx_str_t upstream, void *ctxp)
+ngx_int_t
+ngx_api_gateway_router_match(ngx_pool_t *temp_pool,
+    ngx_http_api_gateway_mapping_t *m,
+    ngx_str_t *uri, ngx_str_t *path, ngx_str_t *upstream)
 {
-    ngx_http_api_gateway_router_t  *router = ctxp;
-    return ngx_api_gateway_router_set_internal(router, upstream, api, NOSTORE);
+    ngx_mapping_regex_t  *regex;
+    ngx_queue_t          *q;
+    int                   captures[3];
+    ngx_keyval_t          retval = { ngx_null_string, ngx_null_string };
+
+    ngx_str_null(path);
+    ngx_str_null(upstream);
+
+    if (m->lock != NULL)
+        ngx_rwlock_rlock(m->lock);
+
+    switch (ngx_trie_find(m->trie, uri, &retval)) {
+
+        case NGX_OK:
+            goto done;
+
+        case NGX_DECLINED:
+            break;
+
+        case NGX_ERROR:
+        default:
+            goto done;
+    }
+
+    for (q = ngx_queue_head(m->regex);
+         q != ngx_queue_sentinel(m->regex);
+         q = ngx_queue_next(q))
+    {
+        regex = ngx_queue_data(q, ngx_mapping_regex_t, queue);
+
+        if (ngx_regex_exec(regex->re, uri, captures, 3) > 0) {
+
+            retval.key = regex->pattern;
+            retval.value = regex->backend;
+
+            break;
+        }
+    }
+
+done:
+
+    if (retval.key.data != NULL) {
+
+        path->data = ngx_pstrdup(temp_pool, &retval.key);
+
+        if (path->data != NULL) {
+
+            upstream->data = ngx_pstrdup(temp_pool, &retval.value);
+
+            if (upstream->data != NULL) {
+
+                path->len = retval.key.len;
+                upstream->len = retval.value.len;
+            }
+        }
+    }
+
+    if (m->lock != NULL)
+        ngx_rwlock_unlock(m->lock);
+
+    return upstream->data != NULL ? NGX_OK : NGX_DECLINED;
+}
+
+
+static ngx_int_t
+ngx_api_gateway_router_doset(ngx_http_api_gateway_router_t *router,
+    ngx_str_t backend, ngx_str_t api)
+{
+    ngx_int_t                        retval = NGX_ERROR;
+    ngx_mapping_regex_t             *regex;
+    ngx_queue_t                     *q;
+    ngx_http_api_gateway_mapping_t  *map;
+
+    if (!router->dynamic) {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "router by var=%V is not dynamic", &router->var);
+        return NGX_ERROR;
+    }
+
+    ngx_trim(&api);
+
+    map = &router->sh->map;
+    
+    ngx_rwlock_wlock(map->lock);
+
+    if (api.data[0] != '~') {
+        retval = ngx_trie_set(map->trie, api, backend);
+        goto done;
+    }
+
+    api.data++;
+    api.len--;
+
+    ngx_trim(&api);
+
+    for (q = ngx_queue_head(map->regex);
+         q != ngx_queue_sentinel(map->regex);
+         q = ngx_queue_next(q))
+    {
+        regex = ngx_queue_data(q, ngx_mapping_regex_t, queue);
+
+        if (ngx_memn2cmp(api.data, regex->pattern.data,
+                         api.len, regex->pattern.len) == 0) {
+            retval = NGX_DECLINED;
+            goto done;
+        }
+    }
+
+    regex = compile_shm_regex(router->sh->slab, api, backend);
+    if (regex == NULL)
+        goto done;
+
+    ngx_queue_insert_tail(map->regex, &regex->queue);
+
+    retval = NGX_OK;
+
+done:
+
+    ngx_rwlock_unlock(map->lock);
+
+    return retval;
+}
+
+
+ngx_int_t
+ngx_api_gateway_router_set(ngx_http_api_gateway_router_t *router,
+    ngx_str_t backend, ngx_str_t api)
+{
+    ngx_int_t  retval;
+
+    retval = ngx_api_gateway_router_doset(router, backend, api);
+    if (retval == NGX_OK)
+        ngx_api_gateway_cfg_route_add(router->var, api, backend);
+
+    return retval;
+}
+
+
+ngx_int_t
+ngx_api_gateway_router_delete(ngx_http_api_gateway_router_t *router,
+    ngx_str_t api)
+{
+    ngx_mapping_regex_t             *regex;
+    ngx_queue_t                     *q;
+    ngx_int_t                        retval;
+    ngx_http_api_gateway_mapping_t  *map;
+    
+    if (!router->dynamic) {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "router by var=%V is not dynamic", &router->var);
+        return NGX_ERROR;
+    }
+
+    ngx_trim(&api);
+
+    map = &router->sh->map;
+
+    ngx_rwlock_wlock(map->lock);
+
+    if (api.data[0] != '~') {
+        retval = ngx_trie_delete(map->trie, api);
+        goto done;
+    }
+
+    api.data++;
+    api.len--;
+
+    ngx_trim(&api);
+
+    for (q = ngx_queue_head(map->regex);
+         q != ngx_queue_sentinel(map->regex);
+         q = ngx_queue_next(q))
+    {
+        regex = ngx_queue_data(q, ngx_mapping_regex_t, queue);
+
+        if (ngx_memn2cmp(api.data, regex->pattern.data,
+                         api.len, regex->pattern.len) == 0) {
+
+            ngx_queue_remove(q);
+            free_shm_regex(router->sh->slab, regex);
+
+            retval = NGX_OK;
+
+            goto done;
+        }
+    }
+
+    retval = NGX_DECLINED;
+
+done:
+
+    if (retval == NGX_OK)
+        ngx_api_gateway_cfg_route_delete(router->var, api);
+
+    ngx_rwlock_unlock(map->lock);
+
+    return retval;
+}
+
+
+static ngx_int_t
+route_add(ngx_str_t api, ngx_str_t upstream, void *router)
+{
+    return ngx_api_gateway_router_doset(router, upstream, api);
 }
 
 
@@ -354,214 +549,4 @@ nomem:
     ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
                   "$%V: no shared memory", &router->var);
     return NGX_ERROR;
-}
-
-
-ngx_int_t
-ngx_api_gateway_router_match(ngx_pool_t *temp_pool,
-    ngx_http_api_gateway_mapping_t *m,
-    ngx_str_t *uri, ngx_str_t *path, ngx_str_t *upstream)
-{
-    ngx_mapping_regex_t  *regex;
-    ngx_queue_t          *q;
-    int                   captures[3];
-    ngx_keyval_t          retval = { ngx_null_string, ngx_null_string };
-
-    ngx_str_null(path);
-    ngx_str_null(upstream);
-
-    if (m->lock != NULL)
-        ngx_rwlock_rlock(m->lock);
-
-    switch (ngx_trie_find(m->trie, uri, &retval)) {
-
-        case NGX_OK:
-            goto done;
-
-        case NGX_DECLINED:
-            break;
-
-        case NGX_ERROR:
-        default:
-            goto done;
-    }
-
-    for (q = ngx_queue_head(m->regex);
-         q != ngx_queue_sentinel(m->regex);
-         q = ngx_queue_next(q))
-    {
-        regex = ngx_queue_data(q, ngx_mapping_regex_t, queue);
-
-        if (ngx_regex_exec(regex->re, uri, captures, 3) > 0) {
-
-            retval.key = regex->pattern;
-            retval.value = regex->backend;
-
-            break;
-        }
-    }
-
-done:
-
-    if (retval.key.data != NULL) {
-
-        path->data = ngx_pstrdup(temp_pool, &retval.key);
-
-        if (path->data != NULL) {
-
-            upstream->data = ngx_pstrdup(temp_pool, &retval.value);
-
-            if (upstream->data != NULL) {
-
-                path->len = retval.key.len;
-                upstream->len = retval.value.len;
-            }
-        }
-    }
-
-    if (m->lock != NULL)
-        ngx_rwlock_unlock(m->lock);
-
-    return upstream->data != NULL ? NGX_OK : NGX_DECLINED;
-}
-
-
-static ngx_int_t
-ngx_api_gateway_router_set_internal(ngx_http_api_gateway_router_t *router,
-    ngx_str_t backend, ngx_str_t api, ngx_flag_t nostore)
-{
-    ngx_int_t                        retval = NGX_ERROR;
-    ngx_mapping_regex_t             *regex;
-    ngx_queue_t                     *q;
-    ngx_http_api_gateway_mapping_t  *map;
-
-    if (!router->dynamic) {
-        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
-                      "router by var=%V is not dynamic", &router->var);
-        return NGX_ERROR;
-    }
-
-    ngx_trim(&api);
-
-    map = &router->sh->map;
-    
-    ngx_rwlock_wlock(map->lock);
-
-    if (api.data[0] != '~') {
-        retval = ngx_trie_set(map->trie, api, backend);
-        goto done;
-    }
-
-    api.data++;
-    api.len--;
-
-    ngx_trim(&api);
-
-    for (q = ngx_queue_head(map->regex);
-         q != ngx_queue_sentinel(map->regex);
-         q = ngx_queue_next(q))
-    {
-        regex = ngx_queue_data(q, ngx_mapping_regex_t, queue);
-
-        if (ngx_memn2cmp(api.data, regex->pattern.data,
-                         api.len, regex->pattern.len) == 0) {
-            retval = NGX_DECLINED;
-            goto done;
-        }
-    }
-
-    regex = compile_shm_regex(router->sh->slab, api, backend);
-    if (regex == NULL)
-        goto done;
-
-    ngx_queue_insert_tail(map->regex, &regex->queue);
-
-    retval = NGX_OK;
-
-done:
-
-    if (!nostore && retval == NGX_OK)
-        ngx_api_gateway_cfg_route_add(router->var, api, backend);
-
-    ngx_rwlock_unlock(map->lock);
-
-    return retval;
-}
-
-
-static ngx_int_t
-ngx_api_gateway_router_delete_internal(ngx_http_api_gateway_router_t *router,
-    ngx_str_t api, ngx_flag_t nostore)
-{
-    ngx_mapping_regex_t             *regex;
-    ngx_queue_t                     *q;
-    ngx_int_t                        retval;
-    ngx_http_api_gateway_mapping_t  *map;
-    
-    if (!router->dynamic) {
-        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
-                      "router by var=%V is not dynamic", &router->var);
-        return NGX_ERROR;
-    }
-
-    ngx_trim(&api);
-
-    map = &router->sh->map;
-
-    ngx_rwlock_wlock(map->lock);
-
-    if (api.data[0] != '~') {
-        retval = ngx_trie_delete(map->trie, api);
-        goto done;
-    }
-
-    api.data++;
-    api.len--;
-
-    ngx_trim(&api);
-
-    for (q = ngx_queue_head(map->regex);
-         q != ngx_queue_sentinel(map->regex);
-         q = ngx_queue_next(q))
-    {
-        regex = ngx_queue_data(q, ngx_mapping_regex_t, queue);
-
-        if (ngx_memn2cmp(api.data, regex->pattern.data,
-                         api.len, regex->pattern.len) == 0) {
-
-            ngx_queue_remove(q);
-            free_shm_regex(router->sh->slab, regex);
-
-            retval = NGX_OK;
-
-            goto done;
-        }
-    }
-
-    retval = NGX_DECLINED;
-
-done:
-
-    if (!nostore && retval == NGX_OK)
-        ngx_api_gateway_cfg_route_delete(router->var, api);
-
-    ngx_rwlock_unlock(map->lock);
-
-    return retval;
-}
-
-
-ngx_int_t
-ngx_api_gateway_router_set(ngx_http_api_gateway_router_t *router,
-    ngx_str_t backend, ngx_str_t api)
-{
-    return ngx_api_gateway_router_set_internal(router, backend, api, STORE);
-}
-
-
-ngx_int_t
-ngx_api_gateway_router_delete(ngx_http_api_gateway_router_t *router,
-    ngx_str_t api)
-{
-    return ngx_api_gateway_router_delete_internal(router, api, 0);
 }

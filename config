@@ -1,5 +1,4 @@
-ngx_addon_name="ngx_template_module \
-                ngx_sqlite_config_module \
+ngx_addon_name="ngx_sqlite_config_module \
                 ngx_http_api_gateway_module \
                 ngx_dynamic_conf_module \
                 ngx_stream_api_gateway_module"
@@ -17,11 +16,8 @@ DEPS="$ngx_addon_dir/src/ngx_trie.h                \
       $ngx_addon_dir/src/ngx_api_gateway_router.h  \
       $ngx_addon_dir/src/ngx_regex_shm.h"
 
-CORE_MODULE_SRCS="$ngx_addon_dir/src/ngx_template.c         \
-                  $ngx_addon_dir/src/ngx_template_module.c  \
-                  $ngx_addon_dir/src/ngx_api_gateway_cfg_module.c"
-CORE_MODULE_DEPS="$ngx_addon_dir/src/ngx_template.h \
-                  $ngx_addon_dir/src/ngx_api_gateway_cfg.h"
+CORE_MODULE_SRCS="$ngx_addon_dir/src/ngx_api_gateway_cfg_module.c"
+CORE_MODULE_DEPS="$ngx_addon_dir/src/ngx_api_gateway_cfg.h"
 
 REQUIRED_INCS="$YAML_PREFIX/include $SQLITE_PREFIX/include"
 REQUIRED_LIBS="-L$YAML_PREFIX/lib -lyaml -L$SQLITE_PREFIX/lib -lsqlite3"
@@ -56,15 +52,6 @@ if [ "$ngx_module_link" = DYNAMIC ]; then
     . auto/module
 
     ngx_module_type=CORE
-    ngx_module_name="ngx_template_module"
-    ngx_module_incs=$REQUIRED_INCS
-    ngx_module_libs=$REQUIRED_LIBS
-    ngx_module_deps="$CORE_MODULE_DEPS"
-    ngx_module_srcs="$CORE_MODULE_SRCS"
-
-    . auto/module
-
-    ngx_module_type=CORE
     ngx_module_name="ngx_api_gateway_cfg_module"
     ngx_module_incs=$REQUIRED_INCS
     ngx_module_libs=$REQUIRED_LIBS
@@ -77,7 +64,7 @@ elif [ "$ngx_module_link" = ADDON ]; then
 
     STREAM_MODULES="$STREAM_MODULES ngx_stream_api_gateway_module"
     HTTP_AUX_FILTER_MODULES="$HTTP_AUX_FILTER_MODULES ngx_http_api_gateway_module ngx_dynamic_conf_module"
-    EVENT_MODULES="$EVENT_MODULES ngx_template_module ngx_api_gateway_cfg_module"
+    EVENT_MODULES="$EVENT_MODULES ngx_api_gateway_cfg_module"
 
     NGX_ADDON_SRCS="$NGX_ADDON_SRCS $SRCS $CORE_MODULE_SRCS"
     NGX_ADDON_DEPS="$NGX_ADDON_DEPS $DEPS $CORE_MODULE_DEPS"

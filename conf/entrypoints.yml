@@ -11,7 +11,6 @@ entrypoints:
       protocol: http
     backends:
       - backends@app1
-    map: []
 
   - name: app2
     listen: 8081
@@ -25,6 +24,6 @@ entrypoints:
       - backends@app1
       - backends@app2
     map:
-      - a 1;\n
-      - b 2;\n
+      - a 1;
+      - b 2;
       - c 3;

@@ -283,6 +283,7 @@ function build_release() {
               --add-module=../ngx_http_upsync_upstream \
               --add-module=../ngx_dynamic_upstream \
               --add-module=../ngx_dynamic_healthcheck \
+              --add-module=../ngx_template_module \
               --add-module=../../../ngx_api_gateway >> $BUILD_LOG 2>>$ERR_LOG
 
   r=$?
@@ -392,6 +393,7 @@ function download() {
   download_module https://github.com      ZigzagAK    ngx_http_upsync_upstream         tags/1.1.0
   download_module https://github.com      ZigzagAK    ngx_dynamic_upstream             tags/2.3.0
   download_module https://github.com      ZigzagAK    ngx_dynamic_healthcheck          2.X.X
+  download_module https://github.com      ZigzagAK    ngx_template_module              master
 
   cd ..
 }
