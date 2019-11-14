@@ -12,17 +12,31 @@
 // upstreams
 
 typedef struct {
-    ngx_int_t  type;
-    ngx_str_t  name;
-    ngx_int_t  keepalive;
-    ngx_int_t  keepalive_requests;
-    ngx_int_t  keepalive_timeout;
-    ngx_int_t  method;
-    ngx_int_t  max_fails;
-    ngx_int_t  max_conns;
-    time_t     fail_timeout;
-    ngx_int_t  dns_update;
+    ngx_int_t   type;
+    ngx_str_t   name;
+    ngx_int_t   keepalive;
+    ngx_int_t   keepalive_requests;
+    ngx_int_t   keepalive_timeout;
+    ngx_int_t   method;
+    ngx_int_t   max_fails;
+    ngx_int_t   max_conns;
+    time_t      fail_timeout;
+    ngx_int_t   dns_update;
+    ngx_int_t   index;
 } ngx_api_gateway_cfg_upstream_t;
+
+
+typedef enum {
+    http = 0,
+    stream
+} upstream_type;
+
+
+typedef enum {
+    roundrobin = 0,
+    leastconn,
+    iphash
+} balancer_type;
 
 
 ngx_int_t ngx_api_gateway_cfg_upstream_add(ngx_api_gateway_cfg_upstream_t *u);
@@ -32,7 +46,7 @@ ngx_int_t ngx_api_gateway_cfg_upstream_delete(ngx_str_t name, ngx_int_t type);
 typedef ngx_int_t (*on_upstream_pt)(ngx_api_gateway_cfg_upstream_t *u,
     void *ctxp);
 
-ngx_int_t ngx_api_gateway_cfg_upstreams(ngx_cycle_t *cycle,
+ngx_int_t ngx_api_gateway_cfg_upstreams(volatile ngx_cycle_t *cycle,
     on_upstream_pt cb, void *ctxp);
 
 // routes

@@ -71,6 +71,14 @@ ngx_module_t ngx_api_gateway_cfg_module = {
 };
 
 
+static ngx_str_t types[] = {
+
+    ngx_string("http"),
+    ngx_string("stream")
+
+};
+
+
 static ngx_api_gateway_cfg_main_conf_t *
 ngx_api_gateway_cfg_conf(volatile ngx_cycle_t *cycle)
 {
@@ -136,7 +144,8 @@ init_database(ngx_cycle_t *cycle)
                                   "  max_conns INT,"
                                   "  max_fails INT,"
                                   "  fail_timeout INT,"
-                                  "  dns_update INT"
+                                  "  dns_update INT,"
+                                  "  PRIMARY KEY (name, type)"
                                   ")", 0, 0, &err)) {
         ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
             "Failed to init api gateway database, %s", err);
@@ -300,6 +309,7 @@ ngx_api_gateway_cfg_upstream_add(ngx_api_gateway_cfg_upstream_t *u)
 
     ngx_api_gateway_cfg_main_conf_t  *cmcf;
     sqlite3_stmt                     *stmt;
+    int                               rc;
 
     cmcf = ngx_api_gateway_cfg_conf(ngx_cycle);
 
@@ -338,10 +348,15 @@ add:
     if (SQLITE_OK != sqlite3_bind_int(stmt, 10, u->dns_update))
         goto fail;
 
-    if (sqlite3_step(stmt) != SQLITE_DONE)
+    rc = sqlite3_step(stmt);
+
+    if (rc != SQLITE_DONE)
         goto fail;
 
     sqlite3_reset(stmt);
+
+    ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
+        "[%V] add upstream '%V'", &types[u->type], &u->name);
 
     return NGX_OK;
 
@@ -354,6 +369,9 @@ fail:
         sqlite3_finalize(stmt);
         cmcf->upstream_add = NULL;
     }
+
+    if (rc == SQLITE_CONSTRAINT)
+        return NGX_DECLINED;
 
     return NGX_ERROR;
 }
@@ -372,14 +390,14 @@ ngx_api_gateway_cfg_upstream_delete(ngx_str_t name, ngx_int_t type)
 
     if (cmcf->upstream_delete != NULL) {
         sqlite3_clear_bindings(cmcf->upstream_delete);
-        goto add;
+        goto delete;
     }
-
+    
     if (SQLITE_OK != sqlite3_prepare_v2(cmcf->sqlite, SQL, -1,
                                         &cmcf->upstream_delete, 0))
         goto fail;
 
-add:
+delete:
 
     stmt = cmcf->upstream_delete;
 
@@ -393,6 +411,9 @@ add:
         goto fail;
 
     sqlite3_reset(stmt);
+
+    ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
+        "[%V] delete upstream '%V'", &types[type], &name);
 
     return NGX_OK;
 
@@ -412,7 +433,7 @@ fail:
 
 
 ngx_int_t
-ngx_api_gateway_cfg_upstreams(ngx_cycle_t *cycle,
+ngx_api_gateway_cfg_upstreams(volatile ngx_cycle_t *cycle,
     on_upstream_pt cb, void *ctxp)
 {
     static const char *SQL = "SELECT"
@@ -452,7 +473,7 @@ ngx_api_gateway_cfg_upstreams(ngx_cycle_t *cycle,
         u.fail_timeout = sqlite3_column_int64(stmt, 8);
         u.dns_update = sqlite3_column_int(stmt, 9);
 
-        if ((*cb)(&u, ctxp) != NGX_OK) {
+        if ((*cb)(&u, ctxp) == NGX_ERROR) {
             ok = SQLITE_ERROR;
             break;
         }
