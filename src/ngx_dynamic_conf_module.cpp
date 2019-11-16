@@ -1242,13 +1242,18 @@ upstream_print(ngx_api_gateway_cfg_upstream_t *u, void *ctxp)
         "{\"name\":\"%V\","
         "\"type\":\"%V\","
         "\"method\":\"%V\","
+#if 0
         "\"max_conns\":%d,"
         "\"max_fails\":%d,"
         "\"fail_timeout\":%d,",
+#endif
             &u->name,
             &upstream_type_text[u->type],
-            &methods_text[u->method],
-            u->max_conns, u->max_fails, u->fail_timeout);
+            &methods_text[u->method]
+#if 0
+            , u->max_conns, u->max_fails, u->fail_timeout
+#endif
+            );
 
     if (u->keepalive != NGX_DECLINED)
         next->buf->last = ngx_snprintf(next->buf->last,

@@ -421,7 +421,7 @@ ngx_api_gateway_router_add_variable(ngx_conf_t *cf, void *data, void *conf)
     router->var = varname = kv.key;
 
     var = ngx_http_add_variable(cf, &varname,
-                                NGX_HTTP_VAR_CHANGEABLE);
+        NGX_HTTP_VAR_CHANGEABLE|NGX_HTTP_VAR_NOCACHEABLE);
     if (var == NULL)
         return NGX_CONF_ERROR;
 
