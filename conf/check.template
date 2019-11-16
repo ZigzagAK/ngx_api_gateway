@@ -1,1 +1,0 @@
-healthcheck type=tcp rise={{rise}} fall={{fall}} timeout={{timeout}} interval={{interval}};

@@ -1,6 +1,5 @@
 ---
 check:
-
   - name: http
     rise: 1
     fall: 2
@@ -8,13 +7,7 @@ check:
     interval: 10
     request:
       method: GET
-      uri: /health
+      uri: /healthz
     response:
       codes: 200 204
       match: .*
-
-  - name: tcp
-    rise: 1
-    fall: 2
-    timeout: 10000
-    interval: 10

@@ -2,7 +2,7 @@
 entrypoints:
 
   - name: app1
-    listen: "{{env(LISTEN_PORT)|default(33333)}}"
+    listen: "{{env(LISTEN_PORT)|default(8080)}}"
     auth:
       request: /auth_stub
     proxy:
@@ -11,7 +11,6 @@ entrypoints:
       protocol: http
     backends:
       - backends@app1
-    map: []
 
   - name: app2
     listen: 8081
@@ -24,7 +23,3 @@ entrypoints:
     backends:
       - backends@app1
       - backends@app2
-    map:
-      - a 1;\n
-      - b 2;\n
-      - c 3;

@@ -1,0 +1,21 @@
+---
+dynamic:
+  - name: dynamic_entrypoint1
+    listen: "{{env(LISTEN_PORT1)|default(9000)}}"
+    dynamic_var: $dynamic1
+    auth:
+      request: /auth_stub
+    proxy:
+      connect_timeout: 10s
+      read_timeout: 60s
+      protocol: http
+
+  - name: dynamic_entrypoint2
+    listen: "{{env(LISTEN_PORT2)|default(9001)}}"
+    dynamic_var: $dynamic2
+    auth:
+      request: /auth_stub
+    proxy:
+      connect_timeout: 10s
+      read_timeout: 60s
+      protocol: http

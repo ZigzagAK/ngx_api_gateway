@@ -1,0 +1,4 @@
+healthcheck passive type=http rise={{rise}} fall={{fall}} timeout={{timeout}} interval={{interval}};
+healthcheck_request_uri {{request.method}} {{request.uri}};
+healthcheck_response_codes {{response.codes}};
+healthcheck_response_body {{response.match}};

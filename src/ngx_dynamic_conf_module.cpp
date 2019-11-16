@@ -795,6 +795,11 @@ ngx_upstream_delete(ngx_array_t *a)
     u = (ngx_api_gateway_cfg_upstream_t *) a->elts;
 
     for (i = 0, j = 0; i < umcf->upstreams.nelts; i++) {
+        if (uscfp[i]->shm_zone == NULL
+            || uscfp[i]->shm_zone->tag != &ngx_dynamic_conf_module) {
+            uscfp[j++] = uscfp[i];
+            continue;
+        }
         for (k = 0; k < a->nelts; k++) {
             if (u[k].type == M::type
                 && ngx_memn2cmp(u[k].name.data, uscfp[i]->host.data,
@@ -803,9 +808,7 @@ ngx_upstream_delete(ngx_array_t *a)
                 break;
             }
         }
-        if (k == a->nelts
-            && uscfp[i]->shm_zone
-            && uscfp[i]->shm_zone->tag == &ngx_dynamic_conf_module) {
+        if (k == a->nelts) {
             // deleted
             slab = (ngx_slab_pool_t *) uscfp[i]->shm_zone->shm.addr;
             free_upstream<M>(slab, uscfp[i]->peer.data);
@@ -1239,15 +1242,15 @@ upstream_print(ngx_api_gateway_cfg_upstream_t *u, void *ctxp)
 
     next->buf->last = ngx_snprintf(next->buf->last,
                                    next->buf->end - next->buf->last,
-        "{\"name\":\"%V\","
-        "\"type\":\"%V\","
-        "\"method\":\"%V\","
+            "{\"name\":\"%V\","
+            "\"type\":\"%V\","
+            "\"method\":\"%V\","
 #if 0
-        "\"max_conns\":%d,"
-        "\"max_fails\":%d,"
-        "\"fail_timeout\":%d,",
+        ,   "\"max_conns\":%d,"
+            "\"max_fails\":%d,"
+            "\"fail_timeout\":%d,"
 #endif
-            &u->name,
+        ,   &u->name,
             &upstream_type_text[u->type],
             &methods_text[u->method]
 #if 0

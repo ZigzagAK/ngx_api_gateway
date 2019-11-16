@@ -1,7 +1,7 @@
 upstream {{__group}}@{{name}} {
     zone shm_{{name}} 256k;
 
-    upsync unix:logs/registry.sock/registry/backends/nodes?backend={{name}};
+    upsync 127.0.0.1:7777/registry/backends/{{name}}/nodes;
     upsync_header Accept text/plain;
 
     upsync_interval {{upsync.interval}};
