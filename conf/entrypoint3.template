@@ -1,0 +1,26 @@
+server {
+    listen {{listen}} reuseport;
+
+    default_type text/plain;
+
+    location / {
+        auth_request {{auth.request}};
+
+        api_gateway_router $backend:5m {{backends}};
+
+        proxy_connect_timeout {{proxy.connect_timeout}};
+        proxy_read_timeout {{proxy.read_timeout}};
+
+        if ($backend = '') {
+            return 404 'No route';
+        }
+
+        proxy_pass {{proxy.protocol}}://$backend;
+    }
+
+    location = /auth_stub {
+        internal;
+        return 200;
+    }
+}
+

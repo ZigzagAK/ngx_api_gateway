@@ -1,0 +1,46 @@
+server {
+    listen {{listen}} reuseport;
+
+    default_type text/plain;
+
+    {{server.directives|default()}}
+
+    {{server.locations|default()}}
+
+    location / {
+        auth_request {{auth.request}};
+
+        {{location.directives|default()}}
+
+        api_gateway_router $backend:1m     {{backends}};
+        api_gateway_router $first:1m    {{first.backends}};
+        api_gateway_router $second:1m      {{second.backends}};
+
+        proxy_connect_timeout {{proxy.connect_timeout}};
+        proxy_read_timeout {{proxy.read_timeout}};
+
+        set $a $backend$first$second;
+
+        if ($a = '') {
+            return 404 'No route';
+        }
+
+        if ($backend) {
+            proxy_pass {{proxy.protocol}}://$backend;
+        }
+
+        if ($first) {
+            proxy_pass {{proxy.protocol}}://$first;
+        }
+
+        if ($second) {
+            proxy_pass {{proxy.protocol}}://$second;
+        }
+    }
+
+    location = /auth_stub {
+        internal;
+        return 200;
+    }
+}
+

@@ -1,0 +1,25 @@
+---
+backends2:
+
+  - name: app3
+    api:
+      - /app3/fun1
+      - ~ ^/app3/fun2
+      - /app3/fun3
+      - /app3/*/hello/*
+      - /app3/0000000
+    dns:
+      update: 60s
+    server:
+      max_conns: 10
+      max_fails: 2
+      fail_timeout: 30s
+    upsync:
+      interval: 60s
+      timeout: 10s
+    check:
+      response:
+        match: pong
+    servers:
+      - server 127.0.0.1:3333 max_conns={{server.max_conns}} max_fails={{server.max_fails}} fail_timeout={{server.fail_timeout}};
+      - server 127.0.0.1:4444 max_conns={{server.max_conns}} max_fails={{server.max_fails}} fail_timeout={{server.fail_timeout}};
