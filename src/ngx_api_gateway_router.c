@@ -417,7 +417,7 @@ ngx_api_gateway_router_delete(ngx_http_api_gateway_router_t *router,
     ngx_queue_t                     *q;
     ngx_int_t                        retval;
     ngx_http_api_gateway_mapping_t  *map;
-    
+
     if (!router->dynamic) {
         ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
                       "router by var=%V is not dynamic", &router->var);

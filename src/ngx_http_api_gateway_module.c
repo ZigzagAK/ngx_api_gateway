@@ -7,6 +7,7 @@
 
 #include "ngx_api_gateway.h"
 #include "ngx_api_gateway_router.h"
+#include "ngx_api_gateway_util.h"
 
 
 ngx_module_t ngx_http_api_gateway_module;
@@ -198,8 +199,7 @@ ngx_api_gateway_create_loc_conf(ngx_conf_t *cf)
 
 
 static char *
-ngx_api_gateway_merge_loc_conf(ngx_conf_t *cf,
-    void *prev, void *conf)
+ngx_api_gateway_merge_loc_conf(ngx_conf_t *cf, void *prev, void *conf)
 {
     ngx_http_api_gateway_loc_conf_t  *parent;
     ngx_http_api_gateway_loc_conf_t  *child;
@@ -508,66 +508,7 @@ ngx_api_gateway_router_init_shm(ngx_shm_zone_t *zone, void *old)
 static ngx_str_t
 get_var(ngx_http_request_t *r, const char *v)
 {
-    ngx_str_t                   var = { ngx_strlen(v), (u_char *) v };
-    ngx_http_variable_value_t  *value;
-    u_char                     *dst, *src;
-    ngx_str_t                   retval = ngx_null_string;
-
-    value = ngx_http_get_variable(r, &var, ngx_hash_key(var.data, var.len));
-
-    if (value->not_found)
-        return retval;
-
-    src = value->data;
-
-    dst = ngx_pcalloc(r->pool, value->len + 1);
-    if (dst == NULL)
-        return retval;
-
-    retval.data = dst;
-
-    ngx_unescape_uri(&dst, &src, value->len, 0);
-
-    retval.len = dst - retval.data;
-    
-    return retval;
-}
-
-
-static ngx_int_t
-send_response(ngx_http_request_t *r, ngx_uint_t status,
-    const char *text)
-{
-    ngx_http_complex_value_t  cv;
-
-    static ngx_str_t TEXT_PLAIN = ngx_string("text/plain");
-
-    ngx_memzero(&cv, sizeof(ngx_http_complex_value_t));
-
-    cv.value.len = strlen(text);
-    cv.value.data = (u_char *) text;
-
-    return ngx_http_send_response(r, status, &TEXT_PLAIN, &cv);
-}
-
-
-static ngx_int_t
-send_header(ngx_http_request_t *r, ngx_uint_t status)
-{
-    return send_response(r, status, "");
-}
-
-
-static ngx_int_t
-send_no_content(ngx_http_request_t *r)
-{
-    ngx_http_complex_value_t  cv;
-
-    ngx_memzero(&cv, sizeof(ngx_http_complex_value_t));
-
-    r->header_only = 1;
-
-    return ngx_http_send_response(r, NGX_HTTP_NO_CONTENT, NULL, &cv);
+    return get_var_str(r, v, NULL);
 }
 
 
@@ -612,7 +553,7 @@ ngx_api_gateway_route_set_handler(ngx_http_request_t *r)
                 case NGX_OK:
                     return send_no_content(r);
                 case NGX_DECLINED:
-                    return send_header(r, NGX_HTTP_NOT_MODIFIED);
+                    return send_not_modified(r);
                 case NGX_ABORT:
                     return send_response(r, NGX_HTTP_BAD_REQUEST,
                         "router is not dynamic");
@@ -665,7 +606,7 @@ ngx_api_gateway_route_delete_handler(ngx_http_request_t *r)
                 case NGX_OK:
                     return send_no_content(r);
                 case NGX_DECLINED:
-                    return send_header(r, NGX_HTTP_NOT_MODIFIED);
+                    return send_not_modified(r);
             }
 
             return NGX_HTTP_INTERNAL_SERVER_ERROR;

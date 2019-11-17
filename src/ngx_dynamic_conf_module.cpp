@@ -7,9 +7,11 @@ extern "C" {
 #include <ngx_http.h>
 #include <ngx_stream.h>
 
-#include "ngx_api_gateway_cfg.h"
-
 }
+
+#include "ngx_api_gateway_cfg.h"
+#include "ngx_api_gateway_util.h"
+
 
 static void *
 ngx_dynamic_conf_create_main_conf(ngx_conf_t *cf);
@@ -187,23 +189,6 @@ template <class T> static T *
 ngx_pool_calloc(ngx_pool_t *pool, size_t n = 1)
 {
     return (T *) ngx_pcalloc(pool, sizeof(T) * n);
-}
-
-
-static ngx_str_t
-ngx_strdup(ngx_pool_t *pool, u_char *s, size_t len)
-{
-    ngx_str_t  retval = ngx_null_string;
-
-    retval.data = ngx_pool_calloc<u_char>(pool, len + 1);
-
-    if (retval.data) {
-        ngx_memcpy(retval.data, s, len);
-        retval.len = len;
-        retval.data[retval.len] = 0;
-    }
-
-    return retval;
 }
 
 
@@ -631,7 +616,7 @@ ngx_upstream_new(ngx_api_gateway_cfg_upstream_t *u,
 
     if (uscf->peer.init_upstream == NULL)
         uscf->peer.init_upstream = M::init_rr_upstream;
-    
+
     if (uscf->peer.init_upstream(cf, uscf) == NGX_ERROR) {
         umcf->upstreams.nelts--;
         goto fail;
@@ -713,7 +698,9 @@ template <class M> struct Free {
     }
 };
 
+
 typedef ngx_flag_t (*upstream_free_pt)(ngx_slab_pool_t *slab, void *peers);
+
 typedef struct {
     ngx_connection_t   c;
     ngx_pool_t        *pool;
@@ -837,7 +824,7 @@ add(ngx_api_gateway_cfg_upstream_t *u, void *ctxp)
         return NGX_ERROR;
 
     ngx_memcpy(cp, u, ctx->upstreams.size);
-    cp->name = ngx_strdup(ctx->upstreams.pool, u->name.data, u->name.len);
+    cp->name = ngx_dupstr(ctx->upstreams.pool, u->name.data, u->name.len);
     if (cp->name.data == NULL)
         return NGX_ERROR;
 
@@ -921,67 +908,6 @@ ngx_dynamic_conf_init_worker(ngx_cycle_t *cycle)
 
 
 static ngx_int_t
-send_response(ngx_http_request_t *r, ngx_uint_t status,
-    const char *text)
-{
-    ngx_http_complex_value_t  cv;
-
-    static ngx_str_t TEXT_PLAIN = ngx_string("text/plain");
-
-    ngx_memzero(&cv, sizeof(ngx_http_complex_value_t));
-
-    cv.value.len = strlen(text);
-    cv.value.data = (u_char *) text;
-
-    return ngx_http_send_response(r, status, &TEXT_PLAIN, &cv);
-}
-
-
-static ngx_int_t
-send_header(ngx_http_request_t *r, ngx_uint_t status)
-{
-    return send_response(r, status, "");
-}
-
-
-static ngx_str_t
-get_var_str(ngx_http_request_t *r, const char *v, const char *def)
-{
-    ngx_str_t                   var = { ngx_strlen(v), (u_char *) v };
-    ngx_http_variable_value_t  *value;
-    ngx_str_t                   retval = ngx_null_string;
-
-    value = ngx_http_get_variable(r, &var, ngx_hash_key(var.data, var.len));
-
-    if (value->not_found) {
-        retval.data = (u_char *) def;
-        if (def != NULL)
-            retval.len = strlen(def);
-    } else {
-        retval.data = value->data;
-        retval.len = value->len;
-    }
-
-    return retval;
-}
-
-
-static ngx_int_t
-get_var_num(ngx_http_request_t *r, const char *v, ngx_int_t def = NGX_DECLINED)
-{
-    ngx_str_t                   var = { ngx_strlen(v), (u_char *) v };
-    ngx_http_variable_value_t  *value;
-
-    value = ngx_http_get_variable(r, &var, ngx_hash_key(var.data, var.len));
-
-    if (value->not_found)
-        return def;
-
-    return ngx_atoi(value->data, value->len);
-}
-
-
-static ngx_int_t
 ngx_dynamic_conf_upstream_add_handler(ngx_http_request_t *r)
 {
     ngx_api_gateway_cfg_upstream_t  u;
@@ -1015,16 +941,18 @@ ngx_dynamic_conf_upstream_add_handler(ngx_http_request_t *r)
                 return send_response(r, NGX_HTTP_BAD_REQUEST,
                     "http module is not configured");
 
-            u.keepalive = get_var_num(r, "arg_keepalive");
+            u.keepalive = get_var_num(r, "arg_keepalive", NGX_DECLINED);
             if (u.keepalive == NGX_ERROR)
                 return send_response(r, NGX_HTTP_BAD_REQUEST, "bad keepalive");
 
-            u.keepalive_requests = get_var_num(r, "arg_keepalive_requests");
+            u.keepalive_requests = get_var_num(r, "arg_keepalive_requests",
+                                               NGX_DECLINED);
             if (u.keepalive_requests == NGX_ERROR)
                 return send_response(r, NGX_HTTP_BAD_REQUEST,
                     "bad keepalive_requests");
 
-            u.keepalive_timeout = get_var_num(r, "arg_keepalive_timeout");
+            u.keepalive_timeout = get_var_num(r, "arg_keepalive_timeout",
+                                              NGX_DECLINED);
             if (u.keepalive_timeout == NGX_ERROR)
                 return send_response(r, NGX_HTTP_BAD_REQUEST,
                     "bad keepalive_timeout");
@@ -1040,7 +968,7 @@ ngx_dynamic_conf_upstream_add_handler(ngx_http_request_t *r)
             break;
     }
 
-    u.dns_update = get_var_num(r, "arg_dns_update");
+    u.dns_update = get_var_num(r, "arg_dns_update", NGX_DECLINED);
     if (u.dns_update != NGX_DECLINED) {
         if (u.dns_update < 1 || u.dns_update > 3600)
             return send_response(r, NGX_HTTP_BAD_REQUEST,
@@ -1128,11 +1056,11 @@ ngx_dynamic_conf_upstream_delete_handler(ngx_http_request_t *r)
                     ngx_delete_file(fname.data);
             }
 
-            return send_header(r, NGX_HTTP_NO_CONTENT);
+            return send_no_content(r);
 
         case NGX_DECLINED:
 
-            return send_header(r, NGX_HTTP_NOT_MODIFIED);
+            return send_not_modified(r);
     }
 
     return send_header(r, NGX_HTTP_INTERNAL_SERVER_ERROR);

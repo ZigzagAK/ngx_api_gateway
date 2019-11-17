@@ -9,11 +9,13 @@ SRCS="$ngx_addon_dir/src/ngx_api_gateway.c                \
       $ngx_addon_dir/src/ngx_stream_api_gateway_module.c  \
       $ngx_addon_dir/src/ngx_api_gateway_router.c         \
       $ngx_addon_dir/src/ngx_regex_shm.c                  \
+      $ngx_addon_dir/src/ngx_api_gateway_util.c           \
       $ngx_addon_dir/src/ngx_dynamic_conf_module.cpp"
 
 DEPS="$ngx_addon_dir/src/ngx_trie.h                \
       $ngx_addon_dir/src/ngx_api_gateway.h         \
       $ngx_addon_dir/src/ngx_api_gateway_router.h  \
+      $ngx_addon_dir/src/ngx_api_gateway_util.h    \
       $ngx_addon_dir/src/ngx_regex_shm.h"
 
 CORE_MODULE_SRCS="$ngx_addon_dir/src/ngx_api_gateway_cfg_module.c"

@@ -5,6 +5,10 @@
 #ifndef NGX_API_GATEWAY_CONFIG_H
 #define NGX_API_GATEWAY_CONFIG_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <ngx_config.h>
 #include <ngx_core.h>
 
@@ -61,6 +65,9 @@ typedef ngx_int_t (*on_route_pt)(ngx_str_t api, ngx_str_t upstream, void *ctxp);
 ngx_int_t ngx_api_gateway_cfg_routes(ngx_cycle_t *cycle,
     ngx_str_t var, on_route_pt cb, void *ctxp);
 
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* NGX_API_GATEWAY_CONFIG_MODULE_H */
 

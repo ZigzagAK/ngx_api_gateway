@@ -126,7 +126,7 @@ fail:
     return NGX_ERROR;
 }
 
-                
+
 static ngx_int_t
 init_database(ngx_cycle_t *cycle)
 {
@@ -322,7 +322,7 @@ ngx_api_gateway_cfg_upstream_add(ngx_api_gateway_cfg_upstream_t *u)
     if (SQLITE_OK != sqlite3_prepare_v2(cmcf->sqlite, SQL, -1,
                                         &cmcf->upstream_add, 0))
         goto fail;
-    
+
 add:
 
     stmt = cmcf->upstream_add;
@@ -394,7 +394,7 @@ ngx_api_gateway_cfg_upstream_delete(ngx_str_t name, ngx_int_t type)
         sqlite3_clear_bindings(cmcf->upstream_delete);
         goto delete;
     }
-    
+
     if (SQLITE_OK != sqlite3_prepare_v2(cmcf->sqlite, SQL, -1,
                                         &cmcf->upstream_delete, 0))
         goto fail;
@@ -528,7 +528,7 @@ ngx_api_gateway_cfg_route_add(ngx_str_t var, ngx_str_t api, ngx_str_t upstream)
     if (SQLITE_OK != sqlite3_prepare_v2(cmcf->sqlite, SQL, -1,
                                         &cmcf->route_add, 0))
         goto fail;
-    
+
 add:
 
     stmt = cmcf->route_add;
