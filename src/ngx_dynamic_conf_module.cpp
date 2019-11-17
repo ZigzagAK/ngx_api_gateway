@@ -60,7 +60,6 @@ typedef struct {
     size_t                   size;
     ngx_shm_zone_t          *zone;
     ngx_dynamic_conf_shm_t  *shm;
-    ngx_url_t                default_addr;
     ngx_cycle_t             *cycle;
 } ngx_dynamic_conf_main_conf_t;
 
@@ -192,30 +191,23 @@ ngx_http_upstream_init_pt
 ngx_stream_upstream_init_pt
     StreamModule::init_rr_upstream = ngx_stream_upstream_init_round_robin;
 
-static void
-ngx_slab_free_safe(ngx_slab_pool_t *pool, void *p)
-{
-    if (p != NULL)
-        ngx_slab_free(pool, p);
-}
-
 
 static void
-ngx_slab_free_locked_safe(ngx_slab_pool_t *shpool, void *p)
+ngx_shared_free(ngx_slab_pool_t *shpool, void *p)
 {
     if (p != NULL)
         ngx_slab_free_locked(shpool, p);
 }
 
 
-template <class T> T *
-ngx_shm_calloc_locked(ngx_slab_pool_t *shpool, size_t n = 1)
+template <class T> static T *
+ngx_shared_calloc(ngx_slab_pool_t *shpool, size_t n = 1)
 {
     return (T *) ngx_slab_calloc_locked(shpool, sizeof(T) * n);
 }
 
 
-template <class T> T *
+template <class T> static T *
 ngx_pool_calloc(ngx_pool_t *pool, size_t n = 1)
 {
     return (T *) ngx_pcalloc(pool, sizeof(T) * n);
@@ -223,10 +215,27 @@ ngx_pool_calloc(ngx_pool_t *pool, size_t n = 1)
 
 
 static ngx_str_t
+ngx_strdup(ngx_pool_t *pool, u_char *s, size_t len)
+{
+    ngx_str_t  retval = ngx_null_string;
+
+    retval.data = ngx_pool_calloc<u_char>(pool, len + 1);
+
+    if (retval.data) {
+        ngx_memcpy(retval.data, s, len);
+        retval.len = len;
+        retval.data[retval.len] = 0;
+    }
+
+    return retval;
+}
+
+
+static ngx_str_t
 ngx_str_shm(ngx_slab_pool_t *slab, ngx_str_t *s)
 {
     ngx_str_t  sh;
-    sh.data = ngx_shm_calloc_locked<u_char>(slab, s->len);
+    sh.data = ngx_shared_calloc<u_char>(slab, s->len);
     if (sh.data != NULL) {
         ngx_memcpy(sh.data, s->data, s->len);
         sh.len = s->len;
@@ -239,11 +248,11 @@ static ngx_str_t *
 ngx_str_shm_copy(ngx_slab_pool_t *slab, ngx_str_t *s)
 {
     ngx_str_t  *sh;
-    sh = ngx_shm_calloc_locked<ngx_str_t>(slab);
+    sh = ngx_shared_calloc<ngx_str_t>(slab);
     if (sh != NULL) {
         *sh = ngx_str_shm(slab, s);
         if (sh->data == NULL) {
-            ngx_slab_free_locked(slab, sh);
+            ngx_shared_free(slab, sh);
             sh = NULL;
         }
     }
@@ -251,19 +260,19 @@ ngx_str_shm_copy(ngx_slab_pool_t *slab, ngx_str_t *s)
 }
 
 
-template <class M> ngx_upstream_t *
+template <class M> static ngx_upstream_t *
 new_shm_upstream(ngx_dynamic_conf_shm_t *cfg, ngx_str_t name)
 {
     ngx_upstream_t  *u;
 
-    u = ngx_shm_calloc_locked<ngx_upstream_t>(cfg->slab);
+    u = ngx_shared_calloc<ngx_upstream_t>(cfg->slab);
     if (u == NULL)
         goto nomem;
     u->type = M::type;
     u->name = ngx_str_shm(cfg->slab, &name);
     if (u->name.data == NULL)
         goto nomem;
-    u->peers = ngx_shm_calloc_locked<typename M::peers>(cfg->slab);
+    u->peers = ngx_shared_calloc<typename M::peers>(cfg->slab);
     if (u->peers == NULL)
         goto nomem;
 
@@ -273,9 +282,9 @@ new_shm_upstream(ngx_dynamic_conf_shm_t *cfg, ngx_str_t name)
 
 nomem:
 
-    ngx_slab_free_locked_safe(cfg->slab, u->name.data);
-    ngx_slab_free_locked_safe(cfg->slab, u->peers);
-    ngx_slab_free_locked_safe(cfg->slab, u);
+    ngx_shared_free(cfg->slab, u->name.data);
+    ngx_shared_free(cfg->slab, u->peers);
+    ngx_shared_free(cfg->slab, u);
 
     ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, 0,
                   "new_shm_upstream() alloc failed");
@@ -284,7 +293,7 @@ nomem:
 }
 
 
-template <class M> ngx_upstream_t *
+template <class M> static ngx_upstream_t *
 get_shm_upstream(ngx_dynamic_conf_shm_t *cfg, ngx_str_t name)
 {
     ngx_queue_t     *q;
@@ -305,24 +314,41 @@ get_shm_upstream(ngx_dynamic_conf_shm_t *cfg, ngx_str_t name)
 }
 
 
+template <class M> static ngx_int_t
+del_shm_upstream(ngx_dynamic_conf_shm_t *cfg, ngx_str_t name)
+{
+    ngx_queue_t     *q;
+    ngx_upstream_t  *u;
+
+    for (q = ngx_queue_head(&cfg->upstreams);
+         q != ngx_queue_sentinel(&cfg->upstreams);
+         q = ngx_queue_next(q))
+    {
+        u = ngx_queue_data(q, ngx_upstream_t, queue);
+        if (u->type == M::type
+            && ngx_memn2cmp(u->name.data, name.data,
+                            u->name.len, name.len) == 0) {
+            ngx_queue_remove(q);
+            ngx_shared_free(cfg->slab, u->name.data);
+            ngx_shared_free(cfg->slab, u);
+            return NGX_OK;
+        }
+    }
+
+    return NGX_DECLINED;
+}
+
+
 static void *
 ngx_dynamic_conf_create_main_conf(ngx_conf_t *cf)
 {
     ngx_dynamic_conf_main_conf_t  *dmcf;
-    static ngx_str_t noaddr = ngx_string("0.0.0.0:1");
 
     dmcf = ngx_pool_calloc<ngx_dynamic_conf_main_conf_t>(cf->pool);
     if (dmcf == NULL)
         return NULL;
 
     dmcf->size = NGX_CONF_UNSET_SIZE;
-
-    dmcf->default_addr.url = noaddr;
-    dmcf->default_addr.default_port = 80;
-    dmcf->default_addr.no_resolve = 1;
-
-    ngx_parse_url(cf->pool, &dmcf->default_addr);
-
     dmcf->cycle = cf->cycle;
 
     return dmcf;
@@ -353,7 +379,7 @@ ngx_init_shm_zone(ngx_shm_zone_t *zone, void *old)
     dmcf = (ngx_dynamic_conf_main_conf_t *) zone->data;
     slab = (ngx_slab_pool_t *) zone->shm.addr;
 
-    dmcf->shm = ngx_shm_calloc_locked<ngx_dynamic_conf_shm_t>(slab);
+    dmcf->shm = ngx_shared_calloc<ngx_dynamic_conf_shm_t>(slab);
     if (dmcf->shm == NULL) {
         ngx_log_error(NGX_LOG_EMERG, dmcf->cycle->log, 0,
                           "ngx_init_shm_zone() alloc failed");
@@ -402,7 +428,7 @@ ngx_dynamic_conf_post_conf(ngx_conf_t *cf)
 }
 
 
-template <class M> ngx_conf_t *
+template <class M> static ngx_conf_t *
 get_upstream_conf(ngx_api_gateway_cfg_upstream_t *u)
 {
     ngx_pool_t         *temp_pool;
@@ -410,7 +436,6 @@ get_upstream_conf(ngx_api_gateway_cfg_upstream_t *u)
     ngx_cycle_t        *cycle = (ngx_cycle_t *) ngx_cycle;
     ngx_buf_t          *b;
     ngx_conf_file_t    *conf_file;
-    static ngx_str_t    name = ngx_string("ngx_dynamic_conf");
 
     temp_pool = ngx_create_pool(1024, cycle->log);
     if (temp_pool == NULL)
@@ -423,7 +448,7 @@ get_upstream_conf(ngx_api_gateway_cfg_upstream_t *u)
     cf->temp_pool = temp_pool;
     cf->module_type = M::MODULE_TYPE;
     cf->cmd_type = M::TYPE;
-    cf->name = (char *) name.data;
+    cf->name = (char *) u->name.data;
     cf->handler = NULL;
     cf->handler_conf = NULL;
     cf->pool = cycle->pool;
@@ -479,7 +504,7 @@ nomem:
 }
 
 
-template <class M> ngx_flag_t
+template <class M> static ngx_flag_t
 ngx_upstream_exists(ngx_api_gateway_cfg_upstream_t *u)
 {
     typename M::main   *umcf;
@@ -502,12 +527,12 @@ ngx_upstream_exists(ngx_api_gateway_cfg_upstream_t *u)
 }
 
 
-template <class M> typename M::peer *
+template <class M> static typename M::peer *
 ngx_upstream_copy_peer(ngx_slab_pool_t *slab, typename M::peer *src)
 {
     typename M::peer  *dst;
 
-    dst = ngx_shm_calloc_locked<typename M::peer>(slab);
+    dst = ngx_shared_calloc<typename M::peer>(slab);
     if (dst == NULL)
         return NULL;
 
@@ -519,50 +544,49 @@ ngx_upstream_copy_peer(ngx_slab_pool_t *slab, typename M::peer *src)
 
     dst->sockaddr = (sockaddr *) ngx_slab_alloc_locked(slab, src->socklen);
     if (dst->sockaddr == NULL)
-        goto failed;
+        goto nomem;
 
     ngx_memcpy(dst->sockaddr, src->sockaddr, src->socklen);
 
     dst->name = ngx_str_shm(slab, &src->name);
     if (dst->name.data == NULL)
-        goto failed;
+        goto nomem;
 
     dst->server = ngx_str_shm(slab, &src->server);
     if (dst->server.data == NULL)
-        goto failed;
+        goto nomem;
 
     return dst;
 
-failed:
+nomem:
 
-    ngx_slab_free_safe(slab, dst->server.data);
-    ngx_slab_free_safe(slab, dst->name.data);
-    ngx_slab_free_safe(slab, dst->sockaddr);
-    ngx_slab_free_safe(slab, dst);
+    ngx_shared_free(slab, dst->server.data);
+    ngx_shared_free(slab, dst->name.data);
+    ngx_shared_free(slab, dst->sockaddr);
+    ngx_shared_free(slab, dst);
 
     return NULL;
 }
 
 
-template <class M> typename M::peers *
+template <class M> static typename M::peers *
 ngx_upstream_copy_peers(ngx_slab_pool_t *slab, ngx_str_t *name,
     typename M::peers *dst, typename M::peers *src)
 {
     typename M::peer  *peer, **peerp;
 
     if (dst == NULL) {
-        dst = ngx_shm_calloc_locked<typename M::peers>(slab);
+        dst = ngx_shared_calloc<typename M::peers>(slab);
         if (dst == NULL)
             return NULL;
     }
-    
+
     ngx_memcpy(dst, src, sizeof(typename M::peers));
 
     dst->shpool = slab;
     dst->name = name;
 
     for (peerp = &dst->peer; *peerp; peerp = &peer->next) {
-
         peer = ngx_upstream_copy_peer<M>(slab, *peerp);
         if (peer == NULL)
             return NULL;
@@ -571,7 +595,6 @@ ngx_upstream_copy_peers(ngx_slab_pool_t *slab, ngx_str_t *name,
     }
 
     if (src->next != NULL) {
-
         dst->next = ngx_upstream_copy_peers<M>(slab, name, NULL, src->next);
         if (dst->next == NULL)
             return NULL;
@@ -581,7 +604,7 @@ ngx_upstream_copy_peers(ngx_slab_pool_t *slab, ngx_str_t *name,
 }
 
 
-template <class M> typename M::peers *
+template <class M> static typename M::peers *
 ngx_upstream_copy(ngx_slab_pool_t *slab, void *peers,
     typename M::srv *uscf)
 {
@@ -599,7 +622,7 @@ ngx_upstream_copy(ngx_slab_pool_t *slab, void *peers,
 }
 
 
-template <class M> ngx_int_t
+template <class M> static ngx_int_t
 ngx_upstream_new(ngx_api_gateway_cfg_upstream_t *u,
     ngx_dynamic_conf_main_conf_t *dmcf)
 {
@@ -672,18 +695,15 @@ template <class M> struct Free {
     free(ngx_slab_pool_t *slab, void *p)
     {
         typename M::peers  *primary, *peers;
-        typename M::peer   *peer, *tmp;
+        typename M::peer   *peer;
 
         primary = (typename M::peers *) p;
 
         ngx_rwlock_rlock(&primary->rwlock);
 
         for (peers = primary; peers != NULL; peers = peers->next) {
-
             for (peer = peers->peer; peer != NULL; peer = peer->next) {
-
                 if (peer->conns != 0) {
-
                     ngx_rwlock_unlock(&primary->rwlock);
                     return NGX_AGAIN;
                 }
@@ -691,32 +711,27 @@ template <class M> struct Free {
         }
 
         // no references
+        // delete resources
+
+        ngx_shmtx_lock(&slab->mutex);
 
         for (peers = primary; peers != NULL; peers = peers->next) {
-
             for (peer = peers->peer; peer != NULL;) {
-
-                tmp = peer;
+                typename M::peer  *tmp = peer;
                 peer = peer->next;
-
-                ngx_slab_free_locked(slab, tmp->name.data);
-                ngx_slab_free_locked(slab, tmp->server.data);
-                ngx_slab_free_locked(slab, tmp->sockaddr);
-                ngx_slab_free_locked(slab, tmp);
+                ngx_shared_free(slab, tmp->name.data);
+                ngx_shared_free(slab, tmp->server.data);
+                ngx_shared_free(slab, tmp->sockaddr);
+                ngx_shared_free(slab, tmp);
             }
         }
 
-        primary->peer = NULL;
-        primary->single = 0;
+        ngx_shared_free(slab, primary->name->data);
+        ngx_shared_free(slab, primary->name);
+        ngx_shared_free(slab, primary->next);
+        ngx_shared_free(slab, primary);
 
-        if (primary->next != NULL) {
-            ngx_slab_free_locked(slab, primary->next);
-            primary->next = NULL;
-        }
-
-        // leaked: peers & peers->name
-
-        ngx_rwlock_unlock(&primary->rwlock);
+        ngx_shmtx_unlock(&slab->mutex);
 
         return NGX_OK;
     }
@@ -732,6 +747,18 @@ typedef struct {
 } free_context_t;
 
 
+typedef struct {
+    ngx_connection_t               c;
+    ngx_dynamic_conf_main_conf_t  *dmcf;
+} ngx_dynamic_conf_sync_t;
+
+
+typedef struct {
+    ngx_array_t                    upstreams;
+    ngx_dynamic_conf_main_conf_t  *dmcf;
+} sync_context_t;
+
+
 static void
 try_free(ngx_event_t *ev)
 {
@@ -742,11 +769,11 @@ try_free(ngx_event_t *ev)
         return;
     }
 
-    ngx_add_timer(ev, 1000);
+    ngx_add_timer(ev, 60000);
 }
 
 
-template <class M> void
+template <class M> static void
 free_upstream(ngx_slab_pool_t *slab, void *peers)
 {
     ngx_pool_t      *pool;
@@ -774,12 +801,12 @@ free_upstream(ngx_slab_pool_t *slab, void *peers)
     ev->data = ctx;
     ev->handler = try_free;
 
-    try_free(ev);
+    ngx_add_timer(ev, 0);
 }
 
 
-template <class M> void
-ngx_upstream_delete(ngx_array_t *a)
+template <class M> static void
+ngx_upstream_delete(sync_context_t *ctx)
 {
     typename M::main                *umcf;
     typename M::srv                **uscfp;
@@ -790,9 +817,10 @@ ngx_upstream_delete(ngx_array_t *a)
     umcf = M::get_main_conf(ngx_cycle);
     if (umcf == NULL)
         return;
+
     uscfp = (typename M::srv **) umcf->upstreams.elts;
 
-    u = (ngx_api_gateway_cfg_upstream_t *) a->elts;
+    u = (ngx_api_gateway_cfg_upstream_t *) ctx->upstreams.elts;
 
     for (i = 0, j = 0; i < umcf->upstreams.nelts; i++) {
         if (uscfp[i]->shm_zone == NULL
@@ -800,7 +828,7 @@ ngx_upstream_delete(ngx_array_t *a)
             uscfp[j++] = uscfp[i];
             continue;
         }
-        for (k = 0; k < a->nelts; k++) {
+        for (k = 0; k < ctx->upstreams.nelts; k++) {
             if (u[k].type == M::type
                 && ngx_memn2cmp(u[k].name.data, uscfp[i]->host.data,
                                 u[k].name.len, uscfp[i]->host.len) == 0) {
@@ -808,43 +836,16 @@ ngx_upstream_delete(ngx_array_t *a)
                 break;
             }
         }
-        if (k == a->nelts) {
-            // deleted
-            slab = (ngx_slab_pool_t *) uscfp[i]->shm_zone->shm.addr;
-            free_upstream<M>(slab, uscfp[i]->peer.data);
+        if (k == ctx->upstreams.nelts) {
+            slab = ctx->dmcf->shm->slab;
+            ngx_shmtx_lock(&slab->mutex);
+            if (del_shm_upstream<M>(ctx->dmcf->shm, uscfp[i]->host) == NGX_OK)
+                free_upstream<M>(slab, uscfp[i]->peer.data);
+            ngx_shmtx_unlock(&slab->mutex);
         }
     }
 
     umcf->upstreams.nelts = j;
-}
-
-
-typedef struct {
-    ngx_connection_t               c;
-    ngx_dynamic_conf_main_conf_t  *dmcf;
-} ngx_dynamic_conf_sync_t;
-
-
-typedef struct {
-    ngx_array_t                    upstreams;
-    ngx_dynamic_conf_main_conf_t  *dmcf;
-} sync_context_t;
-
-
-ngx_str_t
-ngx_strdup(ngx_pool_t *pool, u_char *s, size_t len)
-{
-    ngx_str_t  retval = ngx_null_string;
-
-    retval.data = ngx_pool_calloc<u_char>(pool, len + 1);
-
-    if (retval.data) {
-        ngx_memcpy(retval.data, s, len);
-        retval.len = len;
-        retval.data[retval.len] = 0;
-    }
-
-    return retval;
 }
 
 
@@ -894,8 +895,8 @@ ngx_dynamic_conf_handler_sync(ngx_event_t *ev)
     if (ngx_api_gateway_cfg_upstreams(ngx_cycle, add, &ctx) == NGX_ERROR)
         goto fail;
 
-    ngx_upstream_delete<HttpModule>(&ctx.upstreams);
-    ngx_upstream_delete<StreamModule>(&ctx.upstreams);
+    ngx_upstream_delete<HttpModule>(&ctx);
+    ngx_upstream_delete<StreamModule>(&ctx);
 
 fail:
 
@@ -1118,9 +1119,9 @@ ngx_dynamic_conf_upstream_add_handler(ngx_http_request_t *r)
 
     ngx_queue_remove(&sh->queue);
 
-    ngx_slab_free_locked(dmcf->shm->slab, sh->name.data);
-    ngx_slab_free_locked(dmcf->shm->slab, sh->peers);
-    ngx_slab_free_locked(dmcf->shm->slab, sh);
+    ngx_shared_free(dmcf->shm->slab, sh->name.data);
+    ngx_shared_free(dmcf->shm->slab, sh->peers);
+    ngx_shared_free(dmcf->shm->slab, sh);
 
     ngx_shmtx_unlock(&dmcf->shm->slab->mutex);
 
@@ -1128,7 +1129,7 @@ ngx_dynamic_conf_upstream_add_handler(ngx_http_request_t *r)
 }
 
 
-char *
+static char *
 ngx_dynamic_conf_upstream_add(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_http_core_loc_conf_t  *clcf;
@@ -1195,7 +1196,7 @@ ngx_dynamic_conf_upstream_delete_handler(ngx_http_request_t *r)
 }
 
 
-char *
+static char *
 ngx_dynamic_conf_upstream_delete(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_http_core_loc_conf_t  *clcf;
