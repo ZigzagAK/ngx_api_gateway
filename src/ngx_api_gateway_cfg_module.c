@@ -309,8 +309,8 @@ ngx_api_gateway_cfg_upstream_add(ngx_api_gateway_cfg_upstream_t *u)
                              ")";
 
     ngx_api_gateway_cfg_main_conf_t  *cmcf;
-    sqlite3_stmt                     *stmt;
-    int                               rc;
+    sqlite3_stmt                     *stmt = NULL;
+    int                               rc = SQLITE_ERROR;
 
     cmcf = ngx_api_gateway_cfg_conf(ngx_cycle);
 
@@ -385,7 +385,7 @@ ngx_api_gateway_cfg_upstream_delete(ngx_str_t name, ngx_int_t type)
                              "  name = @name AND type = @type";
 
     ngx_api_gateway_cfg_main_conf_t  *cmcf;
-    sqlite3_stmt                     *stmt;
+    sqlite3_stmt                     *stmt = NULL;
     int                               affected;
     
     cmcf = ngx_api_gateway_cfg_conf(ngx_cycle);
@@ -515,8 +515,8 @@ ngx_api_gateway_cfg_route_add(ngx_str_t var, ngx_str_t api, ngx_str_t upstream)
                              ")";
 
     ngx_api_gateway_cfg_main_conf_t  *cmcf;
-    sqlite3_stmt                     *stmt;
-    int                               rc;
+    sqlite3_stmt                     *stmt = NULL;
+    int                               rc = SQLITE_ERROR;
 
     cmcf = ngx_api_gateway_cfg_conf(ngx_cycle);
 
@@ -579,7 +579,7 @@ ngx_api_gateway_cfg_route_delete(ngx_str_t var, ngx_str_t api)
                              "  var = @var AND api = @api";
 
     ngx_api_gateway_cfg_main_conf_t  *cmcf;
-    sqlite3_stmt                     *stmt;
+    sqlite3_stmt                     *stmt = NULL;
     int                               affected;
     
     cmcf = ngx_api_gateway_cfg_conf(ngx_cycle);

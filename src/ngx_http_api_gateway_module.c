@@ -547,7 +547,7 @@ ngx_api_gateway_route_set_handler(ngx_http_request_t *r)
             continue;
 
         if (ngx_memn2cmp(router[j]->var.data, var.data,
-                         var.len, var.len) == 0) {
+                         router[j]->var.len, var.len) == 0) {
 
             switch (ngx_api_gateway_router_set(router[j], backend, api)) {
                 case NGX_OK:
@@ -600,7 +600,7 @@ ngx_api_gateway_route_delete_handler(ngx_http_request_t *r)
             continue;
 
         if (ngx_memn2cmp(router[j]->var.data, var.data,
-                         var.len, var.len) == 0) {
+                         router[j]->var.len, var.len) == 0) {
 
             switch (ngx_api_gateway_router_delete(router[j], api)) {
                 case NGX_OK:

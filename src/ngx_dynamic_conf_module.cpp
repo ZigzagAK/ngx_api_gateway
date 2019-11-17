@@ -320,7 +320,7 @@ static ngx_int_t
 upstream_add(ngx_api_gateway_cfg_upstream_t *u, void *ctxp)
 {
     ngx_dynamic_conf_main_conf_t  *dmcf = (ngx_dynamic_conf_main_conf_t *) ctxp;
-    ngx_upstream_t                *sh;
+    ngx_upstream_t                *sh = NULL;
 
     if (u->type == HttpModule::type)
         sh = new_shm_upstream<HttpModule>(dmcf->shm, u->name);
