@@ -29,10 +29,7 @@ ngx_api_gateway_post_conf(ngx_conf_t *cf);
 
 
 static char *
-ngx_api_gateway_route_set(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
-
-static char *
-ngx_api_gateway_route_delete(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+ngx_api_gateway_route(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
 
 static ngx_http_module_t ngx_http_api_gateway_ctx = {
@@ -101,16 +98,9 @@ static ngx_command_t  ngx_http_api_gateway_commands[] = {
       offsetof(ngx_api_gateway_main_conf_t, interval),
       NULL },
 
-    { ngx_string("api_gateway_route_set"),
+    { ngx_string("route_conf"),
       NGX_HTTP_LOC_CONF|NGX_CONF_NOARGS,
-      ngx_api_gateway_route_set,
-      NGX_HTTP_LOC_CONF_OFFSET,
-      0,
-      NULL },
-
-    { ngx_string("api_gateway_route_delete"),
-      NGX_HTTP_LOC_CONF|NGX_CONF_NOARGS,
-      ngx_api_gateway_route_delete,
+      ngx_api_gateway_route,
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
       NULL },
@@ -562,6 +552,13 @@ send_response(ngx_http_request_t *r, ngx_uint_t status,
 
 
 static ngx_int_t
+send_header(ngx_http_request_t *r, ngx_uint_t status)
+{
+    return send_response(r, status, "");
+}
+
+
+static ngx_int_t
 send_no_content(ngx_http_request_t *r)
 {
     ngx_http_complex_value_t  cv;
@@ -585,9 +582,6 @@ ngx_api_gateway_route_set_handler(ngx_http_request_t *r)
     ngx_uint_t                       j;
 
     amcf = ngx_http_get_module_main_conf(r, ngx_http_api_gateway_module);
-
-    if (r->method != NGX_HTTP_POST)
-        return NGX_HTTP_NOT_ALLOWED;
 
     backend = get_var(r, "arg_backend");
     api = get_var(r, "arg_api");
@@ -614,28 +608,21 @@ ngx_api_gateway_route_set_handler(ngx_http_request_t *r)
         if (ngx_memn2cmp(router[j]->var.data, var.data,
                          var.len, var.len) == 0) {
 
-            if (ngx_api_gateway_router_set(router[j], backend, api)
-                    != NGX_ERROR)
-                return send_no_content(r);
+            switch (ngx_api_gateway_router_set(router[j], backend, api)) {
+                case NGX_OK:
+                    return send_no_content(r);
+                case NGX_DECLINED:
+                    return send_header(r, NGX_HTTP_NOT_MODIFIED);
+                case NGX_ABORT:
+                    return send_response(r, NGX_HTTP_BAD_REQUEST,
+                        "router is not dynamic");
+            }
 
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
     }
 
     return send_response(r, NGX_HTTP_NOT_FOUND, "router not found");
-}
-
-
-static char *
-ngx_api_gateway_route_set(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
-{
-    ngx_http_core_loc_conf_t  *clcf;
-
-    clcf = (ngx_http_core_loc_conf_t *) ngx_http_conf_get_module_loc_conf(cf,
-        ngx_http_core_module);
-    clcf->handler = ngx_api_gateway_route_set_handler;
-
-    return NGX_CONF_OK;
 }
 
 
@@ -649,9 +636,6 @@ ngx_api_gateway_route_delete_handler(ngx_http_request_t *r)
     ngx_uint_t                       j;
 
     amcf = ngx_http_get_module_main_conf(r, ngx_http_api_gateway_module);
-
-    if (r->method != NGX_HTTP_DELETE)
-        return NGX_HTTP_NOT_ALLOWED;
 
     api = get_var(r, "arg_api");
     var = get_var(r, "arg_var");
@@ -677,8 +661,12 @@ ngx_api_gateway_route_delete_handler(ngx_http_request_t *r)
         if (ngx_memn2cmp(router[j]->var.data, var.data,
                          var.len, var.len) == 0) {
 
-            if (ngx_api_gateway_router_delete(router[j], api) != NGX_ERROR)
-                return send_no_content(r);
+            switch (ngx_api_gateway_router_delete(router[j], api)) {
+                case NGX_OK:
+                    return send_no_content(r);
+                case NGX_DECLINED:
+                    return send_header(r, NGX_HTTP_NOT_MODIFIED);
+            }
 
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
@@ -688,14 +676,27 @@ ngx_api_gateway_route_delete_handler(ngx_http_request_t *r)
 }
 
 
+static ngx_int_t
+ngx_api_gateway_route_handler(ngx_http_request_t *r)
+{
+    if (r->method == NGX_HTTP_POST)
+        return ngx_api_gateway_route_set_handler(r);
+
+    if (r->method == NGX_HTTP_DELETE)
+        return ngx_api_gateway_route_delete_handler(r);
+
+    return send_response(r, NGX_HTTP_NOT_ALLOWED, "method not allowed");
+}
+
+
 static char *
-ngx_api_gateway_route_delete(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+ngx_api_gateway_route(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_http_core_loc_conf_t  *clcf;
 
     clcf = (ngx_http_core_loc_conf_t *) ngx_http_conf_get_module_loc_conf(cf,
         ngx_http_core_module);
-    clcf->handler = ngx_api_gateway_route_delete_handler;
+    clcf->handler = ngx_api_gateway_route_handler;
 
     return NGX_CONF_OK;
 }

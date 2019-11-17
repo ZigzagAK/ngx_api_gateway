@@ -347,7 +347,7 @@ ngx_api_gateway_router_doset(ngx_http_api_gateway_router_t *router,
     if (!router->dynamic) {
         ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
                       "router by var=%V is not dynamic", &router->var);
-        return NGX_ERROR;
+        return NGX_ABORT;
     }
 
     ngx_trim(&api);

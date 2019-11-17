@@ -49,7 +49,7 @@ You may associate URLs to upstream in runtime without chaning nginx cnfiguration
 
 Configurations is stored to internal sqlite database and on reload is loaded to nginx configuration.
 
-## Synchronization with external provirers
+## Synchronization with external registry
 
 Routes and upstreams configuration may be fetched from external http server and applied. Some of changes may needs to reload nginx.
 
@@ -162,7 +162,7 @@ check:
 template keyfile=env.yml template=env.template;
 
 http {
-    dynamic_conf_zone 8m;
+    upstream_conf_zone 8m;
 
     template keyfile=check.yml template=check.template;
 
@@ -179,28 +179,16 @@ http {
             healthcheck_status;
         }
 
-        location = /route/set {
-            api_gateway_route_set;
-        }
-
-        location = /route/delete {
-            api_gateway_route_delete;
+        location = /route {
+            api_gateway_route;
         }
 
         location = /dynamic {
             dynamic_upstream;
         }
 
-        location = /upstream/add {
-            upstream_add;
-        }
-
-        location = /upstream/delete {
-            upstream_delete;
-        }
-
-        location = /upstream/list {
-            upstream_list;
+        location = /upstream {
+            upstream_conf;
         }
     }
 }
@@ -210,21 +198,21 @@ For more examples look into `example` folder.
 
 # Dynamic upstreams
 
-## dynamic_conf_zone
+## upstream_conf_zone
 
-|Syntax |dynamic_conf_zone <zone size>|
+|Syntax |upstream_conf_zone <zone size>|
 |-------|----------------|
 |Default|8m|
 |Context|http|
 
-## upstream_add
+## upstream_conf
 
-|Syntax |upstream_add|
+|Syntax |upstream_conf|
 |-------|----------------|
 |Default|-|
 |Context|location|
 
-Location handler for adding upstream.
+### Add upstream
 
 Method: `POST`
 
@@ -236,49 +224,33 @@ Arguments:
   - keepalive_timeout - timeout for keepalived connection.
   - dns_update - background synchronization hosts addresses by DNS in seconds. Looking for details in [ngx_dynamic_upstream](https://github.com/ZigzagAK/ngx_dynamic_upstream#dns_update).
 
-Example: `curl -X POST 'localhost:6000/upstream/add?name=test&keepalive=600&keepalive_requests=10'`.
+Example: `curl -X POST 'localhost:6000/upstream?name=test&keepalive=600&keepalive_requests=10'`.
 
-## upstream_delete
+### Delete upstream
 
-|Syntax |upstream_delete|
-|-------|----------------|
-|Default|-|
-|Context|location|
+Method: `DELETE`
 
-Location handler for deleting upstream.
+Example: `curl -X DELETE 'localhost:6000/upstream?name=test'`.
 
-Example: `curl -X DELETE 'localhost:6000/upstream/delete?name=test'`.
+### Get information about upstreams
 
-## upstream_list
+Method: `GET`
 
-|Syntax |upstream_list|
-|-------|----------------|
-|Default|-|
-|Context|location|
-
-Location handler for list dynamic upstreams.
-
-Example: `curl localhost:6000/upstream/list`.
+Example: `curl localhost:6000/upstream`.
 
 Output:
 ```
 [
     {
-        "fail_timeout": 0,
         "keepalive": 600,
         "keepalive_requests": 10,
-        "max_conns": 0,
-        "max_fails": 0,
         "method": "roundrobin",
         "name": "test1",
         "type": "http"
     },
     {
-        "fail_timeout": 0,
         "keepalive": 600,
         "keepalive_requests": 10,
-        "max_conns": 0,
-        "max_fails": 0,
         "method": "roundrobin",
         "name": "test2",
         "type": "http"
@@ -307,14 +279,16 @@ location / {
 
 Routes associated with nginx variable, declared with `api_gateway_router_dynamic` directive.
 
-## Set route handler
+## route_conf
 
-|Syntax |api_gateway_route_set|
+|Syntax |route_conf|
 |-------|----------------|
 |Default|-|
 |Context|location|
 
-Register location handler for setup new route.
+Register location handler for setup new route, delete existing.
+
+### Add new route
 
 Method: `POST`
 
@@ -323,16 +297,9 @@ Arguments:
   - api - route. May be uri mask (/a/b/*/c/d) or regular expression.
   - var - variable name.
 
-Example: `curl -X POST localhost:8888/route/set?backend=app1&api=/a/b/*/c&var=$backend`.
+Example: `curl -X POST localhost:8888/route?backend=app1&api=/a/b/*/c&var=$backend`.
 
-## Delete route handler
-
-|Syntax |api_gateway_route_set|
-|-------|----------------|
-|Default|-|
-|Context|location|
-
-Register location handler for delete route.
+### Delete route
 
 Method: `DELETE`
 
@@ -340,7 +307,7 @@ Arguments:
   - api - route. May be uri mask (/a/b/*/c/d) or regular expression.
   - var - variable name.
 
-Example: `curl -X DELETE localhost:8888/route/set?api=/a/b/*/c&var=$backend`.
+Example: `curl -X DELETE localhost:8888/route?api=/a/b/*/c&var=$backend`.
 
 # Static routes
 

@@ -38,15 +38,7 @@ static ngx_http_module_t ngx_dynamic_conf_ctx = {
 
 
 static char *
-ngx_dynamic_conf_upstream_add(ngx_conf_t *cf, ngx_command_t *cmd,
-    void *conf);
-
-static char *
-ngx_dynamic_conf_upstream_delete(ngx_conf_t *cf, ngx_command_t *cmd,
-    void *conf);
-
-static char *
-ngx_dynamic_conf_upstream_list(ngx_conf_t *cf, ngx_command_t *cmd,
+ngx_dynamic_conf_upstream(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 
 
@@ -73,30 +65,16 @@ static ngx_str_t methods[] = {
 
 static ngx_command_t  ngx_dynamic_conf_commands[] = {
 
-    { ngx_string("dynamic_conf_zone"),
+    { ngx_string("upstream_conf_zone"),
       NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_size_slot,
       NGX_HTTP_MAIN_CONF_OFFSET,
       offsetof(ngx_dynamic_conf_main_conf_t, size),
       NULL },
 
-    { ngx_string("upstream_add"),
+    { ngx_string("upstream_conf"),
       NGX_HTTP_LOC_CONF|NGX_CONF_NOARGS,
-      ngx_dynamic_conf_upstream_add,
-      NGX_HTTP_LOC_CONF_OFFSET,
-      0,
-      NULL },
-
-    { ngx_string("upstream_delete"),
-      NGX_HTTP_LOC_CONF|NGX_CONF_NOARGS,
-      ngx_dynamic_conf_upstream_delete,
-      NGX_HTTP_LOC_CONF_OFFSET,
-      0,
-      NULL },
-
-    { ngx_string("upstream_list"),
-      NGX_HTTP_LOC_CONF|NGX_CONF_NOARGS,
-      ngx_dynamic_conf_upstream_list,
+      ngx_dynamic_conf_upstream,
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
       NULL },
@@ -138,7 +116,7 @@ struct HttpModule {
     typedef ngx_http_conf_ctx_t            ctx;
 
     static const ngx_module_t  *module;
-    static const int            type;
+    static const upstream_type  type;
 
     static const ngx_uint_t     MODULE_TYPE;
     static const ngx_uint_t     TYPE;
@@ -160,7 +138,7 @@ struct StreamModule {
     typedef ngx_stream_conf_ctx_t            ctx;
 
     static const ngx_module_t  *module;
-    static const int            type;
+    static const upstream_type  type;
 
     static const ngx_uint_t     MODULE_TYPE;
     static const ngx_uint_t     TYPE;
@@ -174,17 +152,15 @@ struct StreamModule {
 };
 
 
-const ngx_module_t * HttpModule::module = &ngx_http_module;
-const ngx_module_t * StreamModule::module = &ngx_stream_module;
+const ngx_module_t  *HttpModule::module = &ngx_http_module;
+const upstream_type  HttpModule::type = http;
+const ngx_uint_t     HttpModule::MODULE_TYPE = NGX_HTTP_MODULE;
+const ngx_uint_t     HttpModule::TYPE = NGX_HTTP_MAIN_CONF;
 
-const int HttpModule::type = http;
-const int StreamModule::type = stream;
-
-const ngx_uint_t HttpModule::MODULE_TYPE = NGX_HTTP_MODULE;
-const ngx_uint_t StreamModule::MODULE_TYPE = NGX_STREAM_MODULE;
-
-const ngx_uint_t HttpModule::TYPE = NGX_HTTP_MAIN_CONF;
-const ngx_uint_t StreamModule::TYPE = NGX_STREAM_MAIN_CONF;
+const ngx_module_t  *StreamModule::module = &ngx_stream_module;
+const upstream_type  StreamModule::type = stream;
+const ngx_uint_t     StreamModule::MODULE_TYPE = NGX_STREAM_MODULE;
+const ngx_uint_t     StreamModule::TYPE = NGX_STREAM_MAIN_CONF;
 
 ngx_http_upstream_init_pt
     HttpModule::init_rr_upstream = ngx_http_upstream_init_round_robin;
@@ -1010,16 +986,8 @@ ngx_dynamic_conf_upstream_add_handler(ngx_http_request_t *r)
 {
     ngx_api_gateway_cfg_upstream_t  u;
     ngx_str_t                       method;
-    ngx_dynamic_conf_main_conf_t   *dmcf;
-    ngx_upstream_t                 *sh;
     ngx_uint_t                      rc;
     ngx_str_t                       type;
-
-    if (r->method != NGX_HTTP_POST)
-        return send_header(r, NGX_HTTP_NOT_ALLOWED);
-
-    dmcf = (ngx_dynamic_conf_main_conf_t *) ngx_http_get_module_main_conf(r,
-        ngx_dynamic_conf_module);
 
     u.name = get_var_str(r, "arg_name", NULL);
     if (u.name.data == NULL)
@@ -1037,18 +1005,38 @@ ngx_dynamic_conf_upstream_add_handler(ngx_http_request_t *r)
             "bad method (roundrobin, leastconn, iphash)");
 
     type = get_var_str(r, "arg_stream", NULL);
-    u.type = type.data != NULL ? stream : http;
+    u.type = type.data != NULL ? StreamModule::type : HttpModule::type;
 
     switch (u.type) {
-        case http:
+
+        case HttpModule::type:
+
             if (!ngx_cycle->conf_ctx[ngx_http_module.index])
                 return send_response(r, NGX_HTTP_BAD_REQUEST,
                     "http module is not configured");
+
+            u.keepalive = get_var_num(r, "arg_keepalive");
+            if (u.keepalive == NGX_ERROR)
+                return send_response(r, NGX_HTTP_BAD_REQUEST, "bad keepalive");
+
+            u.keepalive_requests = get_var_num(r, "arg_keepalive_requests");
+            if (u.keepalive_requests == NGX_ERROR)
+                return send_response(r, NGX_HTTP_BAD_REQUEST,
+                    "bad keepalive_requests");
+
+            u.keepalive_timeout = get_var_num(r, "arg_keepalive_timeout");
+            if (u.keepalive_timeout == NGX_ERROR)
+                return send_response(r, NGX_HTTP_BAD_REQUEST,
+                    "bad keepalive_timeout");
+
             break;
-        case stream:
+
+        case StreamModule::type:
+
             if (!ngx_cycle->conf_ctx[ngx_stream_module.index])
                 return send_response(r, NGX_HTTP_BAD_REQUEST,
                     "stream module is not configured");
+
             break;
     }
 
@@ -1057,22 +1045,6 @@ ngx_dynamic_conf_upstream_add_handler(ngx_http_request_t *r)
         if (u.dns_update < 1 || u.dns_update > 3600)
             return send_response(r, NGX_HTTP_BAD_REQUEST,
                                  "bad dns_update [1,3600]");
-    }
-
-    if (u.type == HttpModule::type) {
-        u.keepalive = get_var_num(r, "arg_keepalive");
-        if (u.keepalive == NGX_ERROR)
-            return send_response(r, NGX_HTTP_BAD_REQUEST, "bad keepalive");
-
-        u.keepalive_requests = get_var_num(r, "arg_keepalive_requests");
-        if (u.keepalive_requests == NGX_ERROR)
-            return send_response(r, NGX_HTTP_BAD_REQUEST,
-                "bad keepalive_requests");
-
-        u.keepalive_timeout = get_var_num(r, "arg_keepalive_timeout");
-        if (u.keepalive_timeout == NGX_ERROR)
-            return send_response(r, NGX_HTTP_BAD_REQUEST,
-                "bad keepalive_timeout");
     }
 
     u.max_conns = get_var_num(r, "arg_max_conns", 0);
@@ -1087,24 +1059,12 @@ ngx_dynamic_conf_upstream_add_handler(ngx_http_request_t *r)
     if (u.fail_timeout == NGX_ERROR)
         return send_response(r, NGX_HTTP_BAD_REQUEST, "bad fail_timeout");
 
-    ngx_shmtx_lock(&dmcf->shm->slab->mutex);
-
-    if (u.type == HttpModule::type)
-        sh = new_shm_upstream<HttpModule>(dmcf->shm, u.name);
-    if (u.type == StreamModule::type)
-        sh = new_shm_upstream<StreamModule>(dmcf->shm, u.name);    
-    if (sh == NULL) {
-        ngx_shmtx_unlock(&dmcf->shm->slab->mutex);
-        return send_response(r, NGX_HTTP_INTERNAL_SERVER_ERROR, "no memory");
-    }
-
     switch (ngx_api_gateway_cfg_upstream_add(&u)) {
 
         case NGX_OK:
 
-            ngx_shmtx_unlock(&dmcf->shm->slab->mutex);
-
-            return send_header(r, NGX_HTTP_NO_CONTENT);
+            rc = NGX_HTTP_NO_CONTENT;
+            break;
 
         case NGX_DECLINED:
 
@@ -1117,41 +1077,18 @@ ngx_dynamic_conf_upstream_add_handler(ngx_http_request_t *r)
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    ngx_queue_remove(&sh->queue);
-
-    ngx_shared_free(dmcf->shm->slab, sh->name.data);
-    ngx_shared_free(dmcf->shm->slab, sh->peers);
-    ngx_shared_free(dmcf->shm->slab, sh);
-
-    ngx_shmtx_unlock(&dmcf->shm->slab->mutex);
-
     return send_header(r, rc);
-}
-
-
-static char *
-ngx_dynamic_conf_upstream_add(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
-{
-    ngx_http_core_loc_conf_t  *clcf;
-
-    clcf = (ngx_http_core_loc_conf_t *) ngx_http_conf_get_module_loc_conf(cf,
-        ngx_http_core_module);
-    clcf->handler = ngx_dynamic_conf_upstream_add_handler;
-
-    return NGX_CONF_OK;
 }
 
 
 static ngx_int_t
 ngx_dynamic_conf_upstream_delete_handler(ngx_http_request_t *r)
 {
-    ngx_str_t  name;
-    ngx_str_t  tp;
-    ngx_str_t  fname;
-    ngx_int_t  type;
-
-    if (r->method != NGX_HTTP_DELETE)
-        return send_header(r, NGX_HTTP_NOT_ALLOWED);
+    ngx_str_t     name;
+    ngx_str_t     tp;
+    ngx_str_t     fname;
+    ngx_int_t     type;
+    ngx_cycle_t  *cycle = (ngx_cycle_t *) ngx_cycle;
 
     name = get_var_str(r, "arg_name", NULL);
     if (name.data == NULL)
@@ -1162,50 +1099,43 @@ ngx_dynamic_conf_upstream_delete_handler(ngx_http_request_t *r)
 
     switch (type) {
 
-        case http:
-            if (!ngx_cycle->conf_ctx[ngx_http_module.index])
+        case HttpModule::type:
+            if (!cycle->conf_ctx[ngx_http_module.index])
                 return send_response(r, NGX_HTTP_BAD_REQUEST,
                     "http module is not configured");
             break;
 
-        case stream:
-            if (!ngx_cycle->conf_ctx[ngx_stream_module.index])
+        case StreamModule::type:
+            if (!cycle->conf_ctx[ngx_stream_module.index])
                 return send_response(r, NGX_HTTP_BAD_REQUEST,
                     "stream module is not configured");
             break;
 
     }
 
-    if (ngx_api_gateway_cfg_upstream_delete(name, type) == NGX_OK) {
+    switch (ngx_api_gateway_cfg_upstream_delete(name, type)) {
 
-        fname.data = ngx_pool_calloc<u_char>(r->pool, name.len + 8);
+        case NGX_OK:
 
-        if (fname.data != NULL) {
+            fname.data = ngx_pool_calloc<u_char>(r->pool, name.len + 8);
 
-            fname.len = ngx_snprintf(fname.data, name.len + 8,
-                                     "%V.peers", &name) - fname.data;
-            if (ngx_get_full_name(r->pool,
-                    (ngx_str_t *) &ngx_cycle->conf_prefix, &fname) == NGX_OK)
-                ngx_delete_file(fname.data);
-        }
+            if (fname.data != NULL) {
 
-        return send_header(r, NGX_HTTP_NO_CONTENT);
+                fname.len = ngx_snprintf(fname.data, name.len + 8,
+                                         "%V.peers", &name) - fname.data;
+                if (ngx_get_full_name(r->pool, &cycle->conf_prefix, &fname)
+                        == NGX_OK)
+                    ngx_delete_file(fname.data);
+            }
+
+            return send_header(r, NGX_HTTP_NO_CONTENT);
+
+        case NGX_DECLINED:
+
+            return send_header(r, NGX_HTTP_NOT_MODIFIED);
     }
 
-    return send_response(r, NGX_HTTP_NOT_FOUND, "upstream not found");
-}
-
-
-static char *
-ngx_dynamic_conf_upstream_delete(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
-{
-    ngx_http_core_loc_conf_t  *clcf;
-
-    clcf = (ngx_http_core_loc_conf_t *) ngx_http_conf_get_module_loc_conf(cf,
-        ngx_http_core_module);
-    clcf->handler = ngx_dynamic_conf_upstream_delete_handler;
-
-    return NGX_CONF_OK;
+    return send_header(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
 }
 
 
@@ -1299,9 +1229,6 @@ ngx_dynamic_conf_upstream_list_handler(ngx_http_request_t *r)
 
     static ngx_str_t  json = ngx_string("application/json");
 
-    if (r->method != NGX_HTTP_GET)
-        return send_header(r, NGX_HTTP_NOT_ALLOWED);
-
     ngx_memzero(&start, sizeof(ngx_chain_t));
 
     ctx.r = r;
@@ -1338,14 +1265,30 @@ ngx_dynamic_conf_upstream_list_handler(ngx_http_request_t *r)
 }
 
 
+static ngx_int_t
+ngx_dynamic_conf_upstream_handler(ngx_http_request_t *r)
+{
+    if (r->method == NGX_HTTP_GET)
+        return ngx_dynamic_conf_upstream_list_handler(r);
+
+    if (r->method == NGX_HTTP_POST)
+        return ngx_dynamic_conf_upstream_add_handler(r);
+
+    if (r->method == NGX_HTTP_DELETE)
+        return ngx_dynamic_conf_upstream_delete_handler(r);
+
+    return send_response(r, NGX_HTTP_NOT_ALLOWED, "method not allowed");
+}
+
+
 static char *
-ngx_dynamic_conf_upstream_list(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+ngx_dynamic_conf_upstream(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_http_core_loc_conf_t  *clcf;
 
     clcf = (ngx_http_core_loc_conf_t *) ngx_http_conf_get_module_loc_conf(cf,
         ngx_http_core_module);
-    clcf->handler = ngx_dynamic_conf_upstream_list_handler;
+    clcf->handler = ngx_dynamic_conf_upstream_handler;
 
     return NGX_CONF_OK;
 }

@@ -156,7 +156,8 @@ init_database(ngx_cycle_t *cycle)
                                   "CREATE TABLE IF NOT EXISTS ROUTES ("
                                   "  var TEXT,"
                                   "  api TEXT,"
-                                  "  upstream TEXT"
+                                  "  upstream TEXT,"
+                                  "  PRIMARY KEY (var, api)"
                                   ")", 0, 0, &err)) {
         ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
             "Failed to init api gateway database, %s", err);
@@ -385,6 +386,7 @@ ngx_api_gateway_cfg_upstream_delete(ngx_str_t name, ngx_int_t type)
 
     ngx_api_gateway_cfg_main_conf_t  *cmcf;
     sqlite3_stmt                     *stmt;
+    int                               affected;
     
     cmcf = ngx_api_gateway_cfg_conf(ngx_cycle);
 
@@ -410,7 +412,12 @@ delete:
     if (sqlite3_step(stmt) != SQLITE_DONE)
         goto fail;
 
+    affected = sqlite3_changes(cmcf->sqlite);
+
     sqlite3_reset(stmt);
+
+    if (affected == 0)
+        return NGX_DECLINED;
 
     ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
         "[%V] delete upstream '%V'", &types[type], &name);
@@ -509,6 +516,7 @@ ngx_api_gateway_cfg_route_add(ngx_str_t var, ngx_str_t api, ngx_str_t upstream)
 
     ngx_api_gateway_cfg_main_conf_t  *cmcf;
     sqlite3_stmt                     *stmt;
+    int                               rc;
 
     cmcf = ngx_api_gateway_cfg_conf(ngx_cycle);
 
@@ -535,10 +543,15 @@ add:
                                        upstream.len, 0))
         goto fail;
 
-    if (sqlite3_step(stmt) != SQLITE_DONE)
+    rc = sqlite3_step(stmt);
+
+    if (rc != SQLITE_DONE)
         goto fail;
 
     sqlite3_reset(stmt);
+
+    ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
+        "add route var=%V api=%V upstream=%V", &var, &api, &upstream);
 
     return NGX_OK;
 
@@ -552,6 +565,9 @@ fail:
         cmcf->route_add = NULL;
     }
 
+    if (rc == SQLITE_CONSTRAINT)
+        return NGX_DECLINED;
+
     return NGX_ERROR;
 }
 
@@ -564,6 +580,7 @@ ngx_api_gateway_cfg_route_delete(ngx_str_t var, ngx_str_t api)
 
     ngx_api_gateway_cfg_main_conf_t  *cmcf;
     sqlite3_stmt                     *stmt;
+    int                               affected;
     
     cmcf = ngx_api_gateway_cfg_conf(ngx_cycle);
 
@@ -590,7 +607,15 @@ del:
     if (sqlite3_step(stmt) != SQLITE_DONE)
         goto fail;
 
+    affected = sqlite3_changes(cmcf->sqlite);
+
     sqlite3_reset(stmt);
+
+    if (affected == 0)
+        return NGX_DECLINED;
+
+    ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
+        "delete route var=%V api=%V", &var, &api);
 
     return NGX_OK;
 
