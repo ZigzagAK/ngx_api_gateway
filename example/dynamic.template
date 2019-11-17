@@ -1,6 +1,11 @@
 server {
     listen {{listen}} reuseport;
 
+    access_log off;
+
+    keepalive_timeout {{keeplaive.requests|default(60s)}};
+    keepalive_requests {{keeplaive.timeout|default(1000)}};
+
     default_type text/plain;
 
     location / {
@@ -14,6 +19,9 @@ server {
         if ({{dynamic_var}} = '') {
             return 404 'No route';
         }
+
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
 
         proxy_pass {{proxy.protocol}}://{{dynamic_var}};
     }

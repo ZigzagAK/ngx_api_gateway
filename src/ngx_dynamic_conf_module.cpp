@@ -409,7 +409,6 @@ get_upstream_conf(ngx_api_gateway_cfg_upstream_t *u)
     cf->temp_pool = temp_pool;
     cf->module_type = M::MODULE_TYPE;
     cf->cmd_type = M::TYPE;
-    cf->name = (char *) u->name.data;
     cf->handler = NULL;
     cf->handler_conf = NULL;
     cf->pool = cycle->pool;

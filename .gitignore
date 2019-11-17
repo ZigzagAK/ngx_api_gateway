@@ -3,4 +3,7 @@ install
 downloads
 build
 tmp
-.peers
+*.peers
+*.db-shm
+*.db-wal
+*.db
