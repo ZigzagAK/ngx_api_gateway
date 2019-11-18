@@ -13,6 +13,9 @@ extern "C" {
 #include "ngx_api_gateway_util.h"
 
 
+#define GC_TIME (600)
+
+
 static void *
 ngx_dynamic_conf_create_main_conf(ngx_conf_t *cf);
 
@@ -649,10 +652,10 @@ fail:
 }
 
 
-template <class M> struct Free {
+template <class M> struct GC {
 
     static ngx_flag_t
-    free(ngx_slab_pool_t *slab, void *p)
+    mark_and_sweep(ngx_slab_pool_t *slab, void *p)
     {
         typename M::peers  *primary, *peers;
         typename M::peer   *peer;
@@ -661,17 +664,25 @@ template <class M> struct Free {
 
         ngx_rwlock_rlock(&primary->rwlock);
 
+        /* mark */
+
         for (peers = primary; peers != NULL; peers = peers->next) {
             for (peer = peers->peer; peer != NULL; peer = peer->next) {
-                if (peer->conns != 0) {
+                if (peer->checked == 0 && peer->conns == 0)
+                    peer->checked = ngx_time();
+            }
+        }
+
+        for (peers = primary; peers != NULL; peers = peers->next) {
+            for (peer = peers->peer; peer != NULL; peer = peer->next) {
+                if (peer->conns != 0 || peer->checked + GC_TIME > ngx_time()) {
                     ngx_rwlock_unlock(&primary->rwlock);
                     return NGX_AGAIN;
                 }
             }
         }
 
-        // no references
-        // delete resources
+        /* sweep */
 
         ngx_shmtx_lock(&slab->mutex);
 
@@ -706,7 +717,7 @@ typedef struct {
     upstream_free_pt   free;
     ngx_slab_pool_t   *slab;
     void              *peers;
-} free_context_t;
+} gc_context_t;
 
 
 typedef struct {
@@ -722,38 +733,38 @@ typedef struct {
 
 
 static void
-try_free(ngx_event_t *ev)
+GC_cycle(ngx_event_t *ev)
 {
-    free_context_t  *ctx = (free_context_t *) ev->data;
+    gc_context_t  *ctx = (gc_context_t *) ev->data;
 
     if (ctx->free(ctx->slab, ctx->peers) == NGX_OK) {
         ngx_destroy_pool(ctx->pool);
         return;
     }
 
-    ngx_add_timer(ev, 60000);
+    ngx_add_timer(ev, 10000);
 }
 
 
 template <class M> static void
 free_upstream(ngx_slab_pool_t *slab, void *peers)
 {
-    ngx_pool_t      *pool;
-    free_context_t  *ctx;
-    ngx_event_t     *ev;
+    ngx_pool_t    *pool;
+    gc_context_t  *ctx;
+    ngx_event_t   *ev;
 
     pool = ngx_create_pool(256, ngx_cycle->log);
     if (pool == NULL)
         return;
 
-    ctx = ngx_pool_calloc<free_context_t>(pool);
+    ctx = ngx_pool_calloc<gc_context_t>(pool);
     if (ctx == NULL)
         return;
 
     ctx->c.fd = -1;
     ctx->pool = pool;
     ctx->slab = slab;
-    ctx->free = &Free<M>::free;
+    ctx->free = &GC<M>::mark_and_sweep;
     ctx->peers = peers;
 
     ev = ngx_pool_calloc<ngx_event_t>(pool);
@@ -761,9 +772,9 @@ free_upstream(ngx_slab_pool_t *slab, void *peers)
         return;
 
     ev->data = ctx;
-    ev->handler = try_free;
+    ev->handler = GC_cycle;
 
-    ngx_add_timer(ev, 0);
+    ngx_add_timer(ev, 10000);
 }
 
 

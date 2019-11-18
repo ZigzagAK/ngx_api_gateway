@@ -272,7 +272,7 @@ function build_release() {
   echo "Configuring release nginx-$VERSION" | tee -a $BUILD_LOG
   ./configure --prefix="$INSTALL_DIR/nginx-$VERSION$SUFFIX" \
               --with-threads \
-              --with-cc-opt="-g -O1 $ADDITIONAL_INCLUDES -Wno-error=unused-value -Wno-error=unused-variable -Wno-error=unused-function" \
+              --with-cc-opt="-g -O0 $ADDITIONAL_INCLUDES -Wno-error=unused-value -Wno-error=unused-variable -Wno-error=unused-function" \
               --with-ld-opt="$ADDITIONAL_LIBS" \
               --with-stream \
               --with-http_auth_request_module \
