@@ -21,7 +21,7 @@ DIR="$(pwd)"
 DIAG_DIR="diag"
 VCS_PATH=${DIR%/*/*}
 
-VERSION="1.17.5"
+VERSION="1.17.6"
 PCRE_VERSION="8.40"
 ZLIB_VERSION="1.2.11"
 
@@ -391,7 +391,7 @@ function download() {
   download_module https://github.com      openresty   echo-nginx-module                master
   download_module https://github.com      openresty   luajit2                          v2.1-agentzh
   download_module https://github.com      ZigzagAK    ngx_http_upsync_upstream         tags/1.1.0
-  download_module https://github.com      ZigzagAK    ngx_dynamic_upstream             tags/2.3.0
+  download_module https://github.com      ZigzagAK    ngx_dynamic_upstream             tags/2.3.1
   download_module https://github.com      ZigzagAK    ngx_dynamic_healthcheck          2.X.X
   download_module https://github.com      ZigzagAK    ngx_template_module              master
 
